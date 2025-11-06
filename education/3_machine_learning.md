@@ -48,3 +48,8 @@ Hay que saber:
 
     - Entender bien sus componentes y funcionamiento.
 
+
+Recursos:
+
+- [3Blue1Brown Neural Networks serie](https://www.youtube.com/watch?v=aircAruvnKk&list=PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi)
+
