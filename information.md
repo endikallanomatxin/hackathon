@@ -2,6 +2,7 @@
 
 [Hackathon Bilbao Website](https://hackathonbilbao.eus/)
 [Hackathon Bilbao Notion Site](https://hackathonlerobotbilbao.notion.site/videos-inspiracion)
+[Hackathones anteriores](https://www.seeedstudio.com/embodied-ai-worldwide-hackathon-home-robot.html?srsltid=AfmBOoruBffNbzsvp7N3uRdSUeXKz6bOONnIgLg-IBilr9AEQcOy58AK)
 
 Nos ponen el robot [LeRobot](https://github.com/huggingface/lerobot) y el
 ordenador para entrenar modelos de IA (creo, no lo he visto confirmado en su
