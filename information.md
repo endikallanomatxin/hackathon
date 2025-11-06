@@ -1,6 +1,7 @@
 # INFORMACIÓN DEL EVENTO
 
-[Link](https://hackathonbilbao.eus/)
+[Hackathon Bilbao Website](https://hackathonbilbao.eus/)
+[Hackathon Bilbao Notion Site](https://hackathonlerobotbilbao.notion.site/videos-inspiracion)
 
 Nos ponen el robot [LeRobot](https://github.com/huggingface/lerobot) y el
 ordenador para entrenar modelos de IA (creo, no lo he visto confirmado en su
