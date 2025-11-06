@@ -1,8 +1,8 @@
 # INFORMACIÓN DEL EVENTO
 
-Link: https://hackathonbilbao.eus/
+[Link](https://hackathonbilbao.eus/)
 
-Nos ponen el robot (LeRobot, https://github.com/huggingface/lerobot) y el
+Nos ponen el robot [LeRobot](https://github.com/huggingface/lerobot) y el
 ordenador para entrenar modelos de IA (creo, no lo he visto confirmado en su
 página).
 
