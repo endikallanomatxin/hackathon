@@ -27,6 +27,12 @@ git clone url-del-repositorio
 git status
 ```
 
+- Crear nueva rama (para modificar sin tocar el modelo main):
+
+```sh
+git checkout -b nombre_rama (sin '-b' para moverse entre ramas o volver al main)
+```
+
 - Para ver el grafo de commits:
 
 ```sh
