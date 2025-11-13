@@ -1,0 +1,231 @@
+# rl/env.py
+import genesis as gs
+import torch
+import numpy as np
+
+class Environment:
+    def __init__(self,
+                 batch_size=64,
+                 max_steps=400,
+                 record=False):
+        self.batch_size = batch_size
+        self.max_steps = max_steps
+        self.record = record
+
+        gs.init(backend=gs.gs_backend.gpu)
+
+        self.scene = gs.Scene(
+            show_viewer = False,
+            show_FPS    = False,
+            vis_options = gs.options.VisOptions(
+                show_world_frame = True,
+                world_frame_size = 1.0,
+                show_link_frame  = False,
+                show_cameras     = False,
+                plane_reflection = True,
+                ambient_light    = (0.1, 0.1, 0.1),
+                n_rendered_envs  = 10,
+            ),
+            sim_options = gs.options.SimOptions(
+                dt = 1/60,
+            ),
+            renderer=gs.renderers.Rasterizer(),
+        )
+
+        if self.record:
+            # a = np.ceil(np.sqrt(batch_size)/2)
+            # The first env of the env grid is at (-a, -a)
+            self.cam = self.scene.add_camera(
+                res    = (1920, 1080),
+                pos    = (2, 2, 1.5),
+                lookat = (0, 0, 0.5),
+                fov    = 40,
+                GUI    = False,
+            )
+
+        self.plane = self.scene.add_entity(gs.morphs.Plane())
+
+        self.robot = self.scene.add_entity(
+            gs.morphs.MJCF(file='robots/UR10e_gripper.xml')
+        )
+
+        # Construimos los entornos en batch
+        self.scene.build(n_envs=batch_size)
+        # option env_spacing=(2, 2) to create a grid
+
+        self.jnt_names = [
+            'shoulder_pan',
+            'shoulder_lift',
+            'elbow',
+            'wrist_1',
+            'wrist_2',
+            'wrist_3',
+            'gripper',
+        ]
+        self.dofs_idx = [self.robot.get_joint(name).dof_idx_local for name in self.jnt_names]
+
+        # Para este ejemplo se asume que todos los entornos avanzan de forma sincronizada.
+        self.current_step = 0
+
+        self.obs_dim = 2*len(self.dofs_idx) + 2*3
+        self.act_dim = 2*len(self.dofs_idx)
+
+        if self.record:
+            self.cam.start_recording()
+
+    def reset(self):
+        # Reiniciamos la posición del robot en todos los entornos
+        ctrl_pos = torch.zeros(len(self.dofs_idx))
+        self.robot.control_dofs_position(
+            torch.tile(ctrl_pos, (self.batch_size, 1)),
+            self.dofs_idx
+        )
+
+        # Reposicionamos el target de forma aleatoria para cada entorno
+        # Se genera un tensor de forma [batch_size, 3] en un rango ([0.2, 0.8], [0.2, 0.8], [0.2, 0.8])
+        new_target_pos = torch.rand(self.batch_size, 3) * torch.tensor([0.6, 0.6, 0.6]) + torch.tensor([0.2, 0.2, 0.2])
+        self.target_pos = new_target_pos.to('cuda')
+        # Draw the target of the first 10 environments
+        self.scene.clear_debug_objects()
+        for i in range(10):
+            self.scene.draw_debug_sphere(new_target_pos[i], radius=0.05, color=(1, 0, 0))
+
+        self.current_step = 0
+
+        self.previous_actions = torch.zeros(self.batch_size, self.act_dim).to('cuda')
+
+        # Dejar que la simulación se estabilice
+        for _ in range(10):
+            self.scene.step()
+
+        if self.record:
+            self.cam.start_recording()
+
+        # Devuelve las observaciones iniciales
+        return self.get_obs()
+
+    def get_obs(self):
+        dof_ang = torch.Tensor(self.robot.get_dofs_position(self.dofs_idx))  # Shape [batch_size, 7]
+        dof_cos = torch.cos(dof_ang)
+        dof_sin = torch.sin(dof_ang)
+        gripper_pos = torch.Tensor(self.robot.get_link('gripper').get_pos())       # Shape [batch_size, 3]
+        target_pos = torch.Tensor(self.target_pos)                                 # Shape [batch_size, 3]
+
+        obs = torch.cat([dof_cos, dof_sin, gripper_pos, target_pos], dim=1)  # Shape [batch_size, obs_dim=23]
+        return obs
+
+    def compute_reward(self):
+        reward_dict = {}
+
+        # MAIN PENALTY: distance between gripper and target
+        # La recompensa es la distancia negativa entre el gripper y el target, para cada entorno
+        gripper_pos = torch.Tensor(self.robot.get_link('gripper').get_pos())
+        target_pos = torch.Tensor(self.target_pos)
+        distance = target_pos - gripper_pos
+        distance_magnitude = torch.linalg.vector_norm(distance, dim=-1)
+        reward_dict['distance'] = torch.mean(distance_magnitude).clone().detach().cpu()
+        reward_dict['distance_reward'] = -distance_magnitude
+
+        # REWARD: Moving towards the target
+        # Cosine similarity between the gripper-target vector and the gripper velocity
+        gripper_velocity = torch.Tensor(self.robot.get_link('gripper').get_vel())
+        gripper_velocity_mag = torch.linalg.vector_norm(gripper_velocity, dim=-1)
+        direction_similarity = torch.nn.functional.cosine_similarity(gripper_velocity, distance, dim=-1)
+        reward_dict['direction_similarity'] = torch.mean(direction_similarity).clone().detach().cpu()
+        reward_dict['direction_similarity_reward'] = 1*direction_similarity*(gripper_velocity_mag.clone().detach())**2  # Make it important only if moving
+
+        # PENALTY: contact_force_sum
+        # Obtenemos la información de contactos de la simulación.
+        contact_info = self.robot.get_contacts()  
+        # contact_info es un diccionario con claves: 'geom_a', 'geom_b', 'link_a', 'link_b',
+        # 'position', 'force_a', 'force_b', 'valid_mask'
+        # que tiene dimensiones [n_envs, n_contacts, ...]
+        # Convertimos la fuerza a tensor. Se asume que tiene shape [n_envs, n_contacts, 3]
+        force_a = torch.tensor(contact_info['force_a'], dtype=torch.float32, device='cuda')
+        # Calculamos la magnitud de la fuerza para cada contacto.
+        force_magnitudes = torch.linalg.vector_norm(force_a, dim=-1)  # [n_envs, n_contacts]
+        # Sumamos las fuerzas de contacto en cada entorno y luego promediamos.
+        contact_force_sum = force_magnitudes.sum(dim=1)  # [n_envs]
+        reward_dict['contact_force_sum'] = torch.mean(contact_force_sum).clone().detach().cpu()
+        reward_dict['contact_force_sum_reward'] = -0.0002*contact_force_sum
+
+        # PENALTY: links_contact_force
+        links_contact_force = self.robot.get_links_net_contact_force()  # Returns a tensor of shape [batch_size, n_links, 3]
+        # Average for each link
+        links_contact_force = torch.mean(links_contact_force, dim=1)  # [batch_size, 3]
+        # Average for each environment
+        links_contact_force = torch.linalg.vector_norm(links_contact_force, dim=1)  # [batch_size]
+        reward_dict['links_force_sum'] = torch.mean(links_contact_force).clone().detach().cpu()
+        reward_dict['links_force_sum_reward'] = -0.003*links_contact_force
+
+        # PENALTY: gripper_velocity
+        reward_dict['gripper_velocity'] = torch.mean(gripper_velocity_mag).clone().detach().cpu()
+        reward_dict['gripper_velocity_reward'] = -0.04*gripper_velocity_mag
+
+        # PENALTY: gripper_angular_velocity
+        gripper_angular_velocity = torch.Tensor(self.robot.get_link('gripper').get_ang())
+        gripper_angular_velocity = torch.linalg.vector_norm(gripper_angular_velocity, dim=-1)
+        reward_dict['gripper_angular_velocity'] = torch.mean(gripper_angular_velocity).clone().detach().cpu()
+        reward_dict['gripper_angular_velocity_reward'] = -0.04*gripper_angular_velocity
+
+        # PENALTY: joint_velocity_sq
+        joint_velocity = torch.Tensor(self.robot.get_dofs_velocity(self.dofs_idx))
+        joint_velocity = torch.linalg.vector_norm(joint_velocity, dim=-1)
+        joint_velocity_sq = joint_velocity**2
+        reward_dict['joint_velocity_sq'] = torch.mean(joint_velocity_sq).clone().detach().cpu()
+        reward_dict['joint_velocity_sq_reward'] = -0.0009*joint_velocity_sq
+
+        # REWARD: forearm_height  (to have it always approach the target from above)
+        forearm_link = self.robot.get_link('forearm_link')  # Shape [batch_size, 3]
+        # Get the height of the forearm link
+        forearm_height = forearm_link.get_pos()[:, 2]
+        reward_dict['forearm_height'] = torch.mean(forearm_height).clone().detach().cpu()
+        reward_dict['forearm_height_reward'] = 0.4*forearm_height
+
+        # PENALTY: low gripper_height (penalizar que esté muy abajo)
+        gripper_height = gripper_pos[:, 2]
+        reward_dict['gripper_height'] = torch.mean(gripper_height).clone().detach().cpu()
+        reward_dict['gripper_height_reward'] = -0.1/(gripper_height + 0.1)
+
+        # COMBINED REWARD
+        reward = torch.zeros(self.batch_size).to('cuda')
+        for key in reward_dict:
+            if 'reward' in key:
+                reward += reward_dict[key].clone()
+                reward_dict[key] = reward_dict[key].mean().clone().detach().cpu().item()
+
+        return reward, reward_dict
+
+    def step(self, actions, record=False):
+        """
+        actions: tensor de forma [batch_size, act_dim]
+        Aplica las acciones a cada entorno, avanza la simulación y devuelve (obs, reward, done, info)
+        """
+        # Se asume que control_dofs_position admite batch actions directamente
+        angles = actions_to_angles(actions)
+        self.robot.control_dofs_position(angles, self.dofs_idx)
+        self.scene.step()
+        self.current_step += 1
+
+        obs = self.get_obs()
+        reward, reward_dict = self.compute_reward()
+
+        # Compare actions with last actions
+        if torch.allclose(actions, self.previous_actions):
+            self.previous_actions = actions
+
+        if self.record and record:
+            self.cam.render()
+
+        return obs, reward, reward_dict
+
+    def save_video(self, filename):
+        self.cam.stop_recording(save_to_filename=filename, fps=30)
+
+def actions_to_angles(actions):
+    """
+    actions contains the trigonometric functions of the angles
+    this function converts them to angles between -pi and pi
+    """
+    angles = torch.atan2(actions[:, 7:], actions[:, :7])
+    return angles
