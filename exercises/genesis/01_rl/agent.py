@@ -15,9 +15,11 @@ class PPOAgent:
                  clip_epsilon=0.2,
                  gamma=0.99,
                  update_epochs=8,
-                 from_checkpoint=None
+                 from_checkpoint=None,
+                 device: torch.device | None = None,
     ):
-        self.policy = PolicyNetwork(obs_dim, act_dim, from_checkpoint=from_checkpoint).to('cuda')
+        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.policy = PolicyNetwork(obs_dim, act_dim, from_checkpoint=from_checkpoint).to(self.device)
         param_count = sum(p.numel() for p in self.policy.parameters())
         gs.logger.info(f"PolicyNetwork has {param_count} parameters")
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
@@ -28,6 +30,8 @@ class PPOAgent:
 
     def select_action_and_get_value(self, obs):
         # obs: tensor de forma [B, obs_dim]
+        if obs.device != self.device:
+            obs = obs.to(self.device)
         action_mean, action_std, value = self.policy.forward(obs)
         action_dist = torch.distributions.Normal(action_mean, action_std)
         action = action_dist.sample()
@@ -79,11 +83,11 @@ class PPOAgent:
         advantages = advantages / (advantages.std() + 1e-8)
 
         # Mover tensores a CUDA (si no lo están)
-        obs = obs.to('cuda')
-        actions = actions.to('cuda')
-        old_log_probs = old_log_probs.to('cuda')
-        advantages = advantages.to('cuda')
-        returns = returns.to('cuda')
+        obs = obs.to(self.device)
+        actions = actions.to(self.device)
+        old_log_probs = old_log_probs.to(self.device)
+        advantages = advantages.to(self.device)
+        returns = returns.to(self.device)
 
         target_entropy = actions.shape[-1]  # Entropía objetivo para la bonificación
         # Hiperparámetros para balancear las pérdidas

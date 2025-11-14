@@ -1,2 +1,4 @@
 genesis-world
 torch
+pandas
+matplotlib

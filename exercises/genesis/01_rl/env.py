@@ -1,16 +1,28 @@
 # rl/env.py
+from pathlib import Path
 import genesis as gs
 import torch
-import numpy as np
 
 class Environment:
     def __init__(self,
                  batch_size=64,
                  max_steps=400,
-                 record=False):
+                 record=False,
+                 robot_mjcf_path: str | Path | None = None,
+                 device: torch.device | None = None):
         self.batch_size = batch_size
         self.max_steps = max_steps
         self.record = record
+        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        repo_root = Path(__file__).resolve().parents[2]
+        robot_path = robot_mjcf_path
+        if robot_path is None:
+            robot_path = repo_root / "assets" / "SO101" / "so101_new_calib.xml"
+        else:
+            robot_path = Path(robot_path)
+            if not robot_path.is_absolute():
+                robot_path = (repo_root / robot_path).resolve()
 
         gs.init(backend=gs.gs_backend.gpu)
 
@@ -46,7 +58,7 @@ class Environment:
         self.plane = self.scene.add_entity(gs.morphs.Plane())
 
         self.robot = self.scene.add_entity(
-            gs.morphs.MJCF(file='robots/UR10e_gripper.xml')
+            gs.morphs.MJCF(file=str(robot_path))
         )
 
         # Construimos los entornos en batch
@@ -56,13 +68,14 @@ class Environment:
         self.jnt_names = [
             'shoulder_pan',
             'shoulder_lift',
-            'elbow',
-            'wrist_1',
-            'wrist_2',
-            'wrist_3',
+            'elbow_flex',
+            'wrist_flex',
+            'wrist_roll',
             'gripper',
         ]
         self.dofs_idx = [self.robot.get_joint(name).dof_idx_local for name in self.jnt_names]
+        self.gripper_link_name = 'gripper'
+        self.forearm_link_name = 'lower_arm'
 
         # Para este ejemplo se asume que todos los entornos avanzan de forma sincronizada.
         self.current_step = 0
@@ -84,15 +97,15 @@ class Environment:
         # Reposicionamos el target de forma aleatoria para cada entorno
         # Se genera un tensor de forma [batch_size, 3] en un rango ([0.2, 0.8], [0.2, 0.8], [0.2, 0.8])
         new_target_pos = torch.rand(self.batch_size, 3) * torch.tensor([0.6, 0.6, 0.6]) + torch.tensor([0.2, 0.2, 0.2])
-        self.target_pos = new_target_pos.to('cuda')
+        self.target_pos = new_target_pos.to(self.device)
         # Draw the target of the first 10 environments
         self.scene.clear_debug_objects()
-        for i in range(10):
+        for i in range(min(10, self.batch_size)):
             self.scene.draw_debug_sphere(new_target_pos[i], radius=0.05, color=(1, 0, 0))
 
         self.current_step = 0
 
-        self.previous_actions = torch.zeros(self.batch_size, self.act_dim).to('cuda')
+        self.previous_actions = torch.zeros(self.batch_size, self.act_dim, device=self.device)
 
         # Dejar que la simulación se estabilice
         for _ in range(10):
@@ -105,11 +118,11 @@ class Environment:
         return self.get_obs()
 
     def get_obs(self):
-        dof_ang = torch.Tensor(self.robot.get_dofs_position(self.dofs_idx))  # Shape [batch_size, 7]
+        dof_ang = torch.as_tensor(self.robot.get_dofs_position(self.dofs_idx), device=self.device)  # Shape [batch_size, n_dofs]
         dof_cos = torch.cos(dof_ang)
         dof_sin = torch.sin(dof_ang)
-        gripper_pos = torch.Tensor(self.robot.get_link('gripper').get_pos())       # Shape [batch_size, 3]
-        target_pos = torch.Tensor(self.target_pos)                                 # Shape [batch_size, 3]
+        gripper_pos = torch.as_tensor(self.robot.get_link(self.gripper_link_name).get_pos(), device=self.device)       # Shape [batch_size, 3]
+        target_pos = torch.as_tensor(self.target_pos, device=self.device)                                 # Shape [batch_size, 3]
 
         obs = torch.cat([dof_cos, dof_sin, gripper_pos, target_pos], dim=1)  # Shape [batch_size, obs_dim=23]
         return obs
@@ -119,8 +132,8 @@ class Environment:
 
         # MAIN PENALTY: distance between gripper and target
         # La recompensa es la distancia negativa entre el gripper y el target, para cada entorno
-        gripper_pos = torch.Tensor(self.robot.get_link('gripper').get_pos())
-        target_pos = torch.Tensor(self.target_pos)
+        gripper_pos = torch.as_tensor(self.robot.get_link(self.gripper_link_name).get_pos(), device=self.device)
+        target_pos = torch.as_tensor(self.target_pos, device=self.device)
         distance = target_pos - gripper_pos
         distance_magnitude = torch.linalg.vector_norm(distance, dim=-1)
         reward_dict['distance'] = torch.mean(distance_magnitude).clone().detach().cpu()
@@ -128,7 +141,7 @@ class Environment:
 
         # REWARD: Moving towards the target
         # Cosine similarity between the gripper-target vector and the gripper velocity
-        gripper_velocity = torch.Tensor(self.robot.get_link('gripper').get_vel())
+        gripper_velocity = torch.as_tensor(self.robot.get_link(self.gripper_link_name).get_vel(), device=self.device)
         gripper_velocity_mag = torch.linalg.vector_norm(gripper_velocity, dim=-1)
         direction_similarity = torch.nn.functional.cosine_similarity(gripper_velocity, distance, dim=-1)
         reward_dict['direction_similarity'] = torch.mean(direction_similarity).clone().detach().cpu()
@@ -141,7 +154,7 @@ class Environment:
         # 'position', 'force_a', 'force_b', 'valid_mask'
         # que tiene dimensiones [n_envs, n_contacts, ...]
         # Convertimos la fuerza a tensor. Se asume que tiene shape [n_envs, n_contacts, 3]
-        force_a = torch.tensor(contact_info['force_a'], dtype=torch.float32, device='cuda')
+        force_a = torch.tensor(contact_info['force_a'], dtype=torch.float32, device=self.device)
         # Calculamos la magnitud de la fuerza para cada contacto.
         force_magnitudes = torch.linalg.vector_norm(force_a, dim=-1)  # [n_envs, n_contacts]
         # Sumamos las fuerzas de contacto en cada entorno y luego promediamos.
@@ -150,7 +163,7 @@ class Environment:
         reward_dict['contact_force_sum_reward'] = -0.0002*contact_force_sum
 
         # PENALTY: links_contact_force
-        links_contact_force = self.robot.get_links_net_contact_force()  # Returns a tensor of shape [batch_size, n_links, 3]
+        links_contact_force = torch.as_tensor(self.robot.get_links_net_contact_force(), device=self.device)  # Returns a tensor of shape [batch_size, n_links, 3]
         # Average for each link
         links_contact_force = torch.mean(links_contact_force, dim=1)  # [batch_size, 3]
         # Average for each environment
@@ -163,22 +176,25 @@ class Environment:
         reward_dict['gripper_velocity_reward'] = -0.04*gripper_velocity_mag
 
         # PENALTY: gripper_angular_velocity
-        gripper_angular_velocity = torch.Tensor(self.robot.get_link('gripper').get_ang())
+        gripper_angular_velocity = torch.as_tensor(self.robot.get_link(self.gripper_link_name).get_ang(), device=self.device)
         gripper_angular_velocity = torch.linalg.vector_norm(gripper_angular_velocity, dim=-1)
         reward_dict['gripper_angular_velocity'] = torch.mean(gripper_angular_velocity).clone().detach().cpu()
         reward_dict['gripper_angular_velocity_reward'] = -0.04*gripper_angular_velocity
 
         # PENALTY: joint_velocity_sq
-        joint_velocity = torch.Tensor(self.robot.get_dofs_velocity(self.dofs_idx))
+        joint_velocity = torch.as_tensor(self.robot.get_dofs_velocity(self.dofs_idx), device=self.device)
         joint_velocity = torch.linalg.vector_norm(joint_velocity, dim=-1)
         joint_velocity_sq = joint_velocity**2
         reward_dict['joint_velocity_sq'] = torch.mean(joint_velocity_sq).clone().detach().cpu()
         reward_dict['joint_velocity_sq_reward'] = -0.0009*joint_velocity_sq
 
         # REWARD: forearm_height  (to have it always approach the target from above)
-        forearm_link = self.robot.get_link('forearm_link')  # Shape [batch_size, 3]
+        forearm_pos = torch.as_tensor(
+            self.robot.get_link(self.forearm_link_name).get_pos(),
+            device=self.device
+        )
         # Get the height of the forearm link
-        forearm_height = forearm_link.get_pos()[:, 2]
+        forearm_height = forearm_pos[:, 2]
         reward_dict['forearm_height'] = torch.mean(forearm_height).clone().detach().cpu()
         reward_dict['forearm_height_reward'] = 0.4*forearm_height
 
@@ -188,7 +204,7 @@ class Environment:
         reward_dict['gripper_height_reward'] = -0.1/(gripper_height + 0.1)
 
         # COMBINED REWARD
-        reward = torch.zeros(self.batch_size).to('cuda')
+        reward = torch.zeros(self.batch_size, device=self.device)
         for key in reward_dict:
             if 'reward' in key:
                 reward += reward_dict[key].clone()
@@ -220,12 +236,17 @@ class Environment:
         return obs, reward, reward_dict
 
     def save_video(self, filename):
+        if not self.record:
+            gs.logger.warning("Video recording requested but record=False for this environment")
+            return
         self.cam.stop_recording(save_to_filename=filename, fps=30)
 
-def actions_to_angles(actions):
+def actions_to_angles(actions: torch.Tensor):
     """
     actions contains the trigonometric functions of the angles
     this function converts them to angles between -pi and pi
     """
-    angles = torch.atan2(actions[:, 7:], actions[:, :7])
-    return angles
+    n_dofs = actions.shape[-1] // 2
+    cos_components = actions[..., :n_dofs]
+    sin_components = actions[..., n_dofs:]
+    return torch.atan2(sin_components, cos_components)
