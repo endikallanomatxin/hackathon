@@ -1,28 +1,20 @@
-# rl/env.py
 from pathlib import Path
 import genesis as gs
 import torch
 
 class Environment:
     def __init__(self,
-                 batch_size=64,
-                 max_steps=400,
-                 record=False,
-                 robot_mjcf_path: str | Path | None = None,
-                 device: torch.device | None = None):
+                 device: torch.device,
+                 batch_size=4,
+                 max_steps=100,
+                 record=False):
+        self.device = device
         self.batch_size = batch_size
         self.max_steps = max_steps
         self.record = record
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         repo_root = Path(__file__).resolve().parents[2]
-        robot_path = robot_mjcf_path
-        if robot_path is None:
-            robot_path = repo_root / "assets" / "SO101" / "so101_new_calib.xml"
-        else:
-            robot_path = Path(robot_path)
-            if not robot_path.is_absolute():
-                robot_path = (repo_root / robot_path).resolve()
+        robot_path = repo_root / "assets" / "SO101" / "so101_new_calib.xml"
 
         gs.init(backend=gs.gs_backend.gpu)
 

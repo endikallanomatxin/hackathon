@@ -1,4 +1,3 @@
-# rl/agent.py
 import torch
 import torch.optim as optim
 import genesis as gs
@@ -7,6 +6,7 @@ from model import PolicyNetwork
 
 class PPOAgent:
     def __init__(self,
+                 device:torch.device,
                  obs_dim,
                  act_dim,
                  lr=3e-5,
@@ -16,9 +16,8 @@ class PPOAgent:
                  gamma=0.99,
                  update_epochs=8,
                  from_checkpoint=None,
-                 device: torch.device | None = None,
     ):
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device
         self.policy = PolicyNetwork(obs_dim, act_dim, from_checkpoint=from_checkpoint).to(self.device)
         param_count = sum(p.numel() for p in self.policy.parameters())
         gs.logger.info(f"PolicyNetwork has {param_count} parameters")
@@ -122,7 +121,7 @@ class PPOAgent:
 
             # Pérdida total (con bonificación de entropía)
             loss = policy_loss_contrib + value_loss_contrib + entropy_loss_contrib
-            
+
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()

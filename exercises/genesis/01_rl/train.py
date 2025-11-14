@@ -1,5 +1,6 @@
 import os
 import time
+import pathlib
 import torch
 import genesis as gs
 
@@ -7,31 +8,28 @@ from env import Environment
 from agent import PPOAgent
 from log import get_latest_model, log_plot, show_reward_info, log_update
 
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-
-def train(log_dir='control/rl/00_move_to_target/log',
-          rollout_steps=400,
+def train(rollout_steps=400,
           batch_size=1024,
           max_steps=2000,
-          record=True,
-          robot_mjcf_path=None,
-          device: torch.device | None = None):
-    device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+          record=True):
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    log_dir = pathlib.Path(__file__).parent / 'logs'
     os.makedirs(log_dir, exist_ok=True)
     training_run_name = time.strftime("%Y-%m-%d-%H-%M-%S")
     os.makedirs(os.path.join(log_dir, training_run_name))
 
-    env = Environment(batch_size=batch_size,
+    env = Environment(device=device,
+                      batch_size=batch_size,
                       max_steps=max_steps,
-                      record=record,
-                      robot_mjcf_path=robot_mjcf_path,
-                      device=device)
+                      record=record)
     obs_dim = env.obs_dim
     act_dim = env.act_dim
     agent = PPOAgent(
+        device,
         obs_dim,
         act_dim,
-        device=device,
         # Comment / uncomment this for model reuse
         # from_checkpoint=get_latest_model(log_dir, training_run_name)
     )
