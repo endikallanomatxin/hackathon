@@ -169,7 +169,7 @@ class Environment:
         # 'position', 'force_a', 'force_b', 'valid_mask'
         # que tiene dimensiones [n_envs, n_contacts, ...]
         # Convertimos la fuerza a tensor. Se asume que tiene shape [n_envs, n_contacts, 3]
-        force_a = torch.tensor(contact_info['force_a'], dtype=torch.float32, device=self.device)
+        force_a = torch.as_tensor(contact_info['force_a'], dtype=torch.float32, device=self.device)
         # Calculamos la magnitud de la fuerza para cada contacto.
         force_magnitudes = torch.linalg.vector_norm(force_a, dim=-1)  # [n_envs, n_contacts]
         # Sumamos las fuerzas de contacto en cada entorno y luego promediamos.
