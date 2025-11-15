@@ -31,6 +31,7 @@ class PPOAgent:
         # obs: tensor de forma [B, obs_dim]
         if obs.device != self.device:
             obs = obs.to(self.device)
+        obs = torch.nan_to_num(obs, nan=0.0, posinf=1e4, neginf=-1e4)
         action_mean, action_std, value = self.policy.forward(obs)
         action_dist = torch.distributions.Normal(action_mean, action_std)
         action = action_dist.sample()
@@ -76,10 +77,15 @@ class PPOAgent:
         actions = actions.view(T * B, -1)
         old_log_probs = old_log_probs.view(T * B)
         returns = returns.view(T * B)
+        obs = torch.nan_to_num(obs, nan=0.0, posinf=1e4, neginf=-1e4)
+        actions = torch.nan_to_num(actions, nan=0.0, posinf=1e4, neginf=-1e4)
+        returns = torch.nan_to_num(returns, nan=0.0, posinf=1e4, neginf=-1e4)
 
         # Calcular ventajas
-        advantages = returns - values.view(-1)
+        flat_values = torch.nan_to_num(values.view(-1), nan=0.0, posinf=1e4, neginf=-1e4)
+        advantages = returns - flat_values
         advantages = advantages / (advantages.std() + 1e-8)
+        advantages = torch.nan_to_num(advantages, nan=0.0, posinf=1e4, neginf=-1e4)
 
         # Mover tensores a CUDA (si no lo están)
         obs = obs.to(self.device)
@@ -98,6 +104,10 @@ class PPOAgent:
             self.optimizer.zero_grad()
             # Forward pass para obtener parámetros de la política y el valor
             mean, std, value_pred = self.policy(obs)  # value_pred shape: [T*B, 1]
+            mean = torch.nan_to_num(mean, nan=0.0, posinf=1e4, neginf=-1e4)
+            std = torch.nan_to_num(std, nan=1.0, posinf=1e4, neginf=-1e4)
+            std = torch.clamp(std, min=1e-3)
+            value_pred = torch.nan_to_num(value_pred, nan=0.0, posinf=1e4, neginf=-1e4)
             dist = torch.distributions.Normal(mean, std)
             new_log_probs = dist.log_prob(actions).sum(dim=-1)
 

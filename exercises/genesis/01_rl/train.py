@@ -9,8 +9,8 @@ from agent import PPOAgent
 from log import get_latest_model, log_plot, show_reward_info, log_update
 
 def train(rollout_steps=400,
-          batch_size=1024,
-          max_steps=2000,
+          batch_size=4,
+          max_steps=200,
           record=True):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

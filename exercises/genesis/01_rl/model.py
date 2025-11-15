@@ -8,7 +8,7 @@ class PolicyNetwork(nn.Module):
                  from_checkpoint=None):
         super().__init__()
 
-        internal_dim = 256
+        internal_dim = 64
 
         # Common layers (4)
         prev = obs_dim

@@ -19,8 +19,9 @@ class Environment:
         gs.init(backend=gs.gs_backend.gpu)
 
         self.scene = gs.Scene(
-            show_viewer = False,
-            show_FPS    = False,
+            sim_options = gs.options.SimOptions(
+                dt = 1/60,
+            ),
             vis_options = gs.options.VisOptions(
                 show_world_frame = True,
                 world_frame_size = 1.0,
@@ -28,12 +29,13 @@ class Environment:
                 show_cameras     = False,
                 plane_reflection = True,
                 ambient_light    = (0.1, 0.1, 0.1),
-                n_rendered_envs  = 10,
-            ),
-            sim_options = gs.options.SimOptions(
-                dt = 1/60,
+                n_rendered_envs  = min(4, batch_size),
             ),
             renderer=gs.renderers.Rasterizer(),
+            profiling_options=gs.options.ProfilingOptions(
+                show_FPS = False,
+            ),
+            show_viewer = False,
         )
 
         if self.record:
@@ -110,13 +112,29 @@ class Environment:
         return self.get_obs()
 
     def get_obs(self):
-        dof_ang = torch.as_tensor(self.robot.get_dofs_position(self.dofs_idx), device=self.device)  # Shape [batch_size, n_dofs]
+        dof_ang = torch.as_tensor(
+            self.robot.get_dofs_position(self.dofs_idx),
+            device=self.device,
+            dtype=torch.float32,
+        )  # Shape [batch_size, n_dofs]
         dof_cos = torch.cos(dof_ang)
         dof_sin = torch.sin(dof_ang)
-        gripper_pos = torch.as_tensor(self.robot.get_link(self.gripper_link_name).get_pos(), device=self.device)       # Shape [batch_size, 3]
-        target_pos = torch.as_tensor(self.target_pos, device=self.device)                                 # Shape [batch_size, 3]
+        gripper_pos = torch.as_tensor(
+            self.robot.get_link(self.gripper_link_name).get_pos(),
+            device=self.device,
+            dtype=torch.float32,
+        )  # Shape [batch_size, 3]
+        target_pos = torch.as_tensor(
+            self.target_pos,
+            device=self.device,
+            dtype=torch.float32,
+        )  # Shape [batch_size, 3]
 
         obs = torch.cat([dof_cos, dof_sin, gripper_pos, target_pos], dim=1)  # Shape [batch_size, obs_dim=23]
+        # Genesis can occasionally return NaNs if the simulation for one of the
+        # batched environments becomes unstable, so clamp the observations to
+        # a safe numeric range before handing them to the policy.
+        obs = torch.nan_to_num(obs, nan=0.0, posinf=1e4, neginf=-1e4)
         return obs
 
     def compute_reward(self):
@@ -135,7 +153,12 @@ class Environment:
         # Cosine similarity between the gripper-target vector and the gripper velocity
         gripper_velocity = torch.as_tensor(self.robot.get_link(self.gripper_link_name).get_vel(), device=self.device)
         gripper_velocity_mag = torch.linalg.vector_norm(gripper_velocity, dim=-1)
-        direction_similarity = torch.nn.functional.cosine_similarity(gripper_velocity, distance, dim=-1)
+        direction_similarity = torch.nn.functional.cosine_similarity(
+            gripper_velocity,
+            distance,
+            dim=-1,
+            eps=1e-6,
+        )
         reward_dict['direction_similarity'] = torch.mean(direction_similarity).clone().detach().cpu()
         reward_dict['direction_similarity_reward'] = 1*direction_similarity*(gripper_velocity_mag.clone().detach())**2  # Make it important only if moving
 
@@ -193,7 +216,16 @@ class Environment:
         # PENALTY: low gripper_height (penalizar que esté muy abajo)
         gripper_height = gripper_pos[:, 2]
         reward_dict['gripper_height'] = torch.mean(gripper_height).clone().detach().cpu()
-        reward_dict['gripper_height_reward'] = -0.1/(gripper_height + 0.1)
+        gripper_height_denom = gripper_height + 0.1
+        # Replace near-zero denominators but keep the physical sign to avoid NaNs.
+        sign = torch.sign(gripper_height_denom)
+        sign = torch.where(sign == 0, torch.ones_like(sign), sign)
+        safe_denom = torch.where(
+            torch.abs(gripper_height_denom) < 1e-6,
+            sign * 1e-6,
+            gripper_height_denom,
+        )
+        reward_dict['gripper_height_reward'] = -0.1 / safe_denom
 
         # COMBINED REWARD
         reward = torch.zeros(self.batch_size, device=self.device)
