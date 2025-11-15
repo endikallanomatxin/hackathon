@@ -36,7 +36,7 @@ def train(rollout_steps=400,
 
     os.makedirs(os.path.join(log_dir, training_run_name, 'checkpoints'))
 
-    action_every_n_steps = 10
+    inference_every_n_steps = 10
     checkpoint_every_n_updates = 100
     plot_every_n_updates = 10
 
@@ -54,29 +54,38 @@ def train(rollout_steps=400,
         rewards_list = []
         reward_dict_list = []
 
-        action, log_prob, value = agent.select_action_and_get_value(obs)
-
         checkpoint = update % checkpoint_every_n_updates == 0
         plot = update % plot_every_n_updates == 0
 
         for step in range(rollout_steps):
-            if step % action_every_n_steps == 0:
-                with torch.no_grad():
-                    action, log_prob, value = agent.select_action_and_get_value(obs)
-
-            obs_list.append(obs.clone().detach())           # shape [B, obs_dim]
-            actions_list.append(action.clone().detach())    # shape [B, act_dim]
-            log_probs_list.append(log_prob.clone().detach())# shape [B]
-            values_list.append(value)                       # shape [B]
-            # No detach, we need the gradient to improve it
-
             with torch.no_grad():
-                next_obs, reward, reward_dict = env.step(action, record=checkpoint)
-            rewards_list.append(reward.clone().detach())    # shape [B]
-            reward_dict_list.append(reward_dict) # Already detached
+                action, log_prob, value = agent.select_action_and_get_value(obs)
+
+            obs_list.append(obs.clone().detach())            # shape [B, obs_dim]
+            actions_list.append(action.clone().detach())     # shape [B, act_dim]
+            log_probs_list.append(log_prob.clone().detach()) # shape [B]
+            values_list.append(value)                        # shape [B]
+
+            reward_sum = torch.zeros(env.batch_size, device=obs.device)
+            reward_dict_sum = None
+
+            for _ in range(inference_every_n_steps):
+                with torch.no_grad():
+                    next_obs, reward, reward_dict = env.step(action, record=checkpoint)
+                reward_sum = reward_sum + reward
+                if reward_dict_sum is None:
+                    reward_dict_sum = {key: float(val) for key, val in reward_dict.items()}
+                else:
+                    for key in reward_dict_sum:
+                        reward_dict_sum[key] += float(reward_dict[key])
+
+            reward_mean = reward_sum / inference_every_n_steps
+            rewards_list.append(reward_mean.clone().detach())  # shape [B]
+            reward_dict_list.append(
+                {key: reward_dict_sum[key] / inference_every_n_steps for key in reward_dict_sum}
+            )
 
             obs = next_obs
-
 
         # Stack them into [T, B, ...]
         rollout = {
