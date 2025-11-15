@@ -3,3 +3,14 @@ genesis-world
 torch
 pandas
 matplotlib
+
+# KNOWN ISSUES
+
+# ERROR: Cannot install -r requirements.txt (line 2) because these package versions have conflicting dependencies.
+# The conflict is caused by:
+# genesis-world 0.2.1 depends on taichi==1.7.3
+# genesis-world 0.2.0 depends on taichi==1.7.2
+# genesis-world 0.1.1 depends on taichi==1.7.2
+# Additionally, some packages in these conflicts have no matching distributions available for your environment: taichi
+
+# Solution: Use python 3.10, as on newer versions there are no available distributions.
