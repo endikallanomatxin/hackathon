@@ -16,7 +16,7 @@ class Environment:
         repo_root = Path(__file__).resolve().parents[2]
         robot_path = repo_root / "assets" / "SO101" / "so101_new_calib.xml"
 
-        gs.init(backend=gs.gs_backend.gpu)
+        gs.init(backend=gs.gs_backend.gpu, performance_mode=True)
 
         self.scene = gs.Scene(
             sim_options = gs.options.SimOptions(

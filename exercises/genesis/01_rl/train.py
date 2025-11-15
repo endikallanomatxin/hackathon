@@ -57,7 +57,7 @@ def train(rollout_steps=400,
         checkpoint = update % checkpoint_every_n_updates == 0
         plot = update % plot_every_n_updates == 0
 
-        for step in range(rollout_steps):
+        for inferece in range(rollout_steps // inference_every_n_steps):
             with torch.no_grad():
                 action, log_prob, value = agent.select_action_and_get_value(obs)
 
@@ -69,7 +69,7 @@ def train(rollout_steps=400,
             reward_sum = torch.zeros(env.batch_size, device=obs.device)
             reward_dict_sum = None
 
-            for _ in range(inference_every_n_steps):
+            for step in range(inference_every_n_steps):
                 with torch.no_grad():
                     next_obs, reward, reward_dict = env.step(action, record=checkpoint)
                 reward_sum = reward_sum + reward

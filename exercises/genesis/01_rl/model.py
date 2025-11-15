@@ -22,7 +22,7 @@ class PolicyNetwork(nn.Module):
 
         # Action layers (2)
         action_layers = []
-        for _ in range(3):
+        for _ in range(2):
             action_layers.append(nn.Linear(internal_dim, internal_dim))
             action_layers.append(nn.LeakyReLU())
             action_layers.append(nn.LayerNorm(internal_dim))
@@ -44,7 +44,7 @@ class PolicyNetwork(nn.Module):
 
         # Value layers (2)
         value_layers = []
-        for _ in range(4):
+        for _ in range(2):
             value_layers.append(nn.Linear(internal_dim, internal_dim))
             value_layers.append(nn.LeakyReLU())
             value_layers.append(nn.LayerNorm(internal_dim))
