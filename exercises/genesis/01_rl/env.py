@@ -99,8 +99,6 @@ class Environment:
 
         self.current_step = 0
 
-        self.previous_actions = torch.zeros(self.batch_size, self.act_dim, device=self.device)
-
         # Dejar que la simulación se estabilice
         for _ in range(10):
             self.scene.step()
@@ -249,10 +247,6 @@ class Environment:
 
         obs = self.get_obs()
         reward, reward_dict = self.compute_reward()
-
-        # Compare actions with last actions
-        if torch.allclose(actions, self.previous_actions):
-            self.previous_actions = actions
 
         if self.record and record:
             self.cam.render()

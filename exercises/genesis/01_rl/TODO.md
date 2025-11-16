@@ -1,9 +1,5 @@
 ## TODO – mejoras pendientes
 
-- **Estado `previous_actions` nunca se actualiza (`env.py`)**
-   - Se asigna sólo si la acción nueva es numéricamente idéntica, lo cual rara vez ocurre; la variable queda congelada desde el `reset`.
-   - Acción: asignar siempre la nueva acción o invertir la lógica (`if not allclose`) para que la detección de acciones repetidas funcione.
-
 - **Selección de checkpoint frágil (`log.py`)**
    - `get_latest_model` hace `max(os.listdir(...))` sin filtrar directorios ni ordenar por fecha; cualquier archivo “grande” rompe la carga.
    - Acción: filtrar sólo carpetas de run y ordenarlas por timestamp (nombre o `mtime`) antes de elegir la última.
