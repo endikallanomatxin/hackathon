@@ -8,12 +8,12 @@ class PolicyNetwork(nn.Module):
                  from_checkpoint=None):
         super().__init__()
 
-        internal_dim = 64
+        internal_dim = 256
 
         # Common layers (4)
         prev = obs_dim
         layers = []
-        for _ in range(2):
+        for _ in range(4):
             layers.append(nn.Linear(prev, internal_dim))
             layers.append(nn.LeakyReLU())
             layers.append(nn.LayerNorm(internal_dim))

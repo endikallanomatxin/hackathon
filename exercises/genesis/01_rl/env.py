@@ -175,7 +175,7 @@ class Environment:
         # Sumamos las fuerzas de contacto en cada entorno y luego promediamos.
         contact_force_sum = force_magnitudes.sum(dim=1)  # [n_envs]
         reward_dict['contact_force_sum'] = torch.mean(contact_force_sum).clone().detach().cpu()
-        reward_dict['contact_force_sum_reward'] = -0.0002*contact_force_sum
+        reward_dict['contact_force_sum_reward'] = -0.02*contact_force_sum
 
         # PENALTY: links_contact_force
         links_contact_force = torch.as_tensor(self.robot.get_links_net_contact_force(), device=self.device)  # Returns a tensor of shape [batch_size, n_links, 3]
@@ -184,17 +184,17 @@ class Environment:
         # Average for each environment
         links_contact_force = torch.linalg.vector_norm(links_contact_force, dim=1)  # [batch_size]
         reward_dict['links_force_sum'] = torch.mean(links_contact_force).clone().detach().cpu()
-        reward_dict['links_force_sum_reward'] = -0.003*links_contact_force
+        reward_dict['links_force_sum_reward'] = -0.08*links_contact_force
 
         # PENALTY: gripper_velocity
         reward_dict['gripper_velocity'] = torch.mean(gripper_velocity_mag).clone().detach().cpu()
-        reward_dict['gripper_velocity_reward'] = -0.04*gripper_velocity_mag
+        reward_dict['gripper_velocity_reward'] = -0.1*gripper_velocity_mag
 
         # PENALTY: gripper_angular_velocity
         gripper_angular_velocity = torch.as_tensor(self.robot.get_link(self.gripper_link_name).get_ang(), device=self.device)
         gripper_angular_velocity = torch.linalg.vector_norm(gripper_angular_velocity, dim=-1)
         reward_dict['gripper_angular_velocity'] = torch.mean(gripper_angular_velocity).clone().detach().cpu()
-        reward_dict['gripper_angular_velocity_reward'] = -0.04*gripper_angular_velocity
+        reward_dict['gripper_angular_velocity_reward'] = -0.01*gripper_angular_velocity
 
         # PENALTY: joint_velocity_sq
         joint_velocity = torch.as_tensor(self.robot.get_dofs_velocity(self.dofs_idx), device=self.device)
@@ -211,7 +211,7 @@ class Environment:
         # Get the height of the forearm link
         forearm_height = forearm_pos[:, 2]
         reward_dict['forearm_height'] = torch.mean(forearm_height).clone().detach().cpu()
-        reward_dict['forearm_height_reward'] = 0.4*forearm_height
+        reward_dict['forearm_height_reward'] = 0.02*forearm_height
 
         # PENALTY: low gripper_height (penalizar que esté muy abajo)
         gripper_height = gripper_pos[:, 2]
@@ -225,7 +225,7 @@ class Environment:
             sign * 1e-6,
             gripper_height_denom,
         )
-        reward_dict['gripper_height_reward'] = - 0.01 / safe_denom
+        reward_dict['gripper_height_reward'] = - 0.004 / safe_denom
 
         # COMBINED REWARD
         reward = torch.zeros(self.batch_size, device=self.device)
