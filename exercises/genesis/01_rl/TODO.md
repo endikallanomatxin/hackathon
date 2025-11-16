@@ -8,10 +8,6 @@
    - Se asigna sólo si la acción nueva es numéricamente idéntica, lo cual rara vez ocurre; la variable queda congelada desde el `reset`.
    - Acción: asignar siempre la nueva acción o invertir la lógica (`if not allclose`) para que la detección de acciones repetidas funcione.
 
-- **Penalización de velocidad angular incorrecta (`env.py`)**
-   - El término `gripper_angular_velocity` usa `get_ang()`, es decir, la orientación, no la velocidad angular.
-   - Acción: usar la API de velocidad angular (`get_angvel()` o equivalente) para que la penalización corresponda a la descripción.
-
 - **Selección de checkpoint frágil (`log.py`)**
    - `get_latest_model` hace `max(os.listdir(...))` sin filtrar directorios ni ordenar por fecha; cualquier archivo “grande” rompe la carga.
    - Acción: filtrar sólo carpetas de run y ordenarlas por timestamp (nombre o `mtime`) antes de elegir la última.
