@@ -11,7 +11,7 @@ class PPOAgent:
                  act_dim,
                  lr=3e-5,
                  lr_min=2e-6,
-                 lr_t0=40,
+                 lr_t0=200,
                  clip_epsilon=0.2,
                  gamma=0.99,
                  update_epochs=8,
