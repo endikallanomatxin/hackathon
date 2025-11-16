@@ -10,19 +10,19 @@ class PolicyNetwork(nn.Module):
 
         internal_dim = 256
 
-        # Common layers (4)
+        # Common layers (2)
         prev = obs_dim
         layers = []
-        for _ in range(4):
+        for _ in range(2):
             layers.append(nn.Linear(prev, internal_dim))
             layers.append(nn.LeakyReLU())
             layers.append(nn.LayerNorm(internal_dim))
             prev = internal_dim
         self.common = nn.Sequential(*layers)
 
-        # Action layers (2)
+        # Action layers (4)
         action_layers = []
-        for _ in range(2):
+        for _ in range(4):
             action_layers.append(nn.Linear(internal_dim, internal_dim))
             action_layers.append(nn.LeakyReLU())
             action_layers.append(nn.LayerNorm(internal_dim))
@@ -42,9 +42,9 @@ class PolicyNetwork(nn.Module):
             nn.Softplus()
         )
 
-        # Value layers (2)
+        # Value layers (4)
         value_layers = []
-        for _ in range(2):
+        for _ in range(4):
             value_layers.append(nn.Linear(internal_dim, internal_dim))
             value_layers.append(nn.LeakyReLU())
             value_layers.append(nn.LayerNorm(internal_dim))

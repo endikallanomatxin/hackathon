@@ -56,11 +56,15 @@ class PPOAgent:
             done_mask = 1.0 - dones[t].to(dtype=rewards.dtype)
             next_return = rewards[t] + self.gamma * next_return * done_mask
             steps_left = max(1, T - t)
-            # Nota: dividimos por la longitud restante del rollout para obtener
-            # un retorno medio; así el valor depende principalmente del estado
-            # actual y no del número de pasos que quedan, a costa de alejarnos
-            # del enfoque clásico de PPO. Revisar si cambiamos a episodios.
-            returns[t] = next_return / steps_left
+            # Nota: dividimos por la suma de los factores de descuento para que el
+            # valor dependa principalmente del estado actual y no de los pasos
+            # restantes; esto no es PPO clásico y habría que revisarlo si cambiamos
+            # a episodios terminados.
+            if self.gamma != 1:
+                weight_sum = (1 - self.gamma ** steps_left) / (1 - self.gamma)
+            else:
+                weight_sum = float(steps_left)
+            returns[t] = next_return / weight_sum
         return returns
 
     def update(self, rollout):
