@@ -38,7 +38,7 @@ def train(rollout_steps=400,
 
     inference_every_n_steps = 10
     checkpoint_every_n_updates = 100
-    plot_every_n_updates = 10
+    plot_every_n_updates = 1
 
     for update in range(100_000):
         print("\n")
