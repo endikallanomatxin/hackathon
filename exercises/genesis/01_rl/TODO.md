@@ -1,9 +1,5 @@
 ## TODO – mejoras pendientes
 
-- **Episodios infinitos (`env.py`)**
-   - `max_steps` nunca se usa, y `step` ignora el indicador `done` a pesar de que la docstring lo promete.
-   - Acción: implementar condiciones de finalización (éxito por distancia al target y límite de pasos), devolver `done` desde `step` y resetear los entornos cuando corresponda. Propagar `done` al buffer para que el cálculo del retorno sea correcto.
-
 - **Estado `previous_actions` nunca se actualiza (`env.py`)**
    - Se asigna sólo si la acción nueva es numéricamente idéntica, lo cual rara vez ocurre; la variable queda congelada desde el `reset`.
    - Acción: asignar siempre la nueva acción o invertir la lógica (`if not allclose`) para que la detección de acciones repetidas funcione.
