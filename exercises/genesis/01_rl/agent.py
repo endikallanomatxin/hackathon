@@ -38,17 +38,24 @@ class PPOAgent:
         log_prob = action_dist.log_prob(action)
         return action, log_prob.sum(dim=-1), value
 
-    def compute_returns(self, rewards):
+    def compute_returns(self, rewards, dones=None):
         """
         rewards: tensores de forma [T, B]
-        Calcula los retornos descontados por cada entorno.
+        dones: opcional, tensores [T, B] indicando el fin del episodio.
+        Calcula los retornos descontados para cada entorno y, si existe,
+        respeta las fronteras de episodio.
         """
         T, B = rewards.shape
         returns = torch.zeros_like(rewards)
         next_return = torch.zeros(B, device=rewards.device)
+        if dones is None:
+            dones = torch.zeros_like(rewards, dtype=torch.bool, device=rewards.device)
+        else:
+            dones = dones.to(rewards.device)
         for t in reversed(range(T)):
-            next_return = rewards[t] + self.gamma * next_return
-            returns[t] = next_return / (T - t)
+            done_mask = 1.0 - dones[t].to(dtype=rewards.dtype)
+            next_return = rewards[t] + self.gamma * next_return * done_mask
+            returns[t] = next_return
         return returns
 
     def update(self, rollout):
@@ -66,9 +73,10 @@ class PPOAgent:
         old_log_probs = rollout['log_probs'] # [T, B]
         values = rollout['values']      # [T, B]
         rewards = rollout['rewards']    # [T, B]
+        dones = rollout.get('dones')    # opcional [T, B]
 
         # Calcular retornos descontados para cada entorno
-        returns = self.compute_returns(rewards)  # [T, B]
+        returns = self.compute_returns(rewards, dones=dones)  # [T, B]
         returns = (returns - returns.mean()) / (returns.std() + 1e-8)
 
         # Aplanar tensores de [T, B, ...] a [T*B, ...]
