@@ -9,7 +9,7 @@ class PPOAgent:
                  device:torch.device,
                  obs_dim,
                  act_dim,
-                 lr=3e-5,
+                 lr=8e-5,
                  lr_min=2e-6,
                  lr_t0=200,
                  clip_epsilon=0.2,
@@ -22,7 +22,7 @@ class PPOAgent:
         param_count = sum(p.numel() for p in self.policy.parameters())
         gs.logger.info(f"PolicyNetwork has {param_count} parameters")
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=lr_t0, T_mult=1, eta_min=lr_min)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=lr_t0, T_mult=2, eta_min=lr_min)
         self.current_lr = lr
         self.clip_epsilon = clip_epsilon
         self.gamma = gamma
