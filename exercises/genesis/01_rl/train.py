@@ -103,15 +103,15 @@ def train(rollout_steps=400,
             'rewards':  torch.stack(rewards_list, dim=0),  # [T, B]
         }
 
-        loss = agent.update(rollout)
+        loss, current_lr = agent.update(rollout)
         mean_reward = rollout['rewards'].mean().item()
 
         reward_dict_mean = {}
         for key in reward_dict_list[0]:
             reward_dict_mean[key] = sum(reward_dict[key] for reward_dict in reward_dict_list) / len(reward_dict_list)
 
-        show_reward_info(mean_reward, loss, reward_dict_mean)
-        log_update(log_dir, training_run_name, update, mean_reward, loss, reward_dict_mean)
+        show_reward_info(mean_reward, loss, current_lr, reward_dict_mean)
+        log_update(log_dir, training_run_name, update, mean_reward, loss, current_lr, reward_dict_mean)
 
         if checkpoint:
             # Create new checkpoints folder

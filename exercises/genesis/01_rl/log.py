@@ -72,8 +72,8 @@ def get_latest_model(log_dir,
     gs.logger.info(f"Loading model from checkpoint {latest_checkpoint} of run {latest_run}")
     return model_path
 
-def show_reward_info(mean_reward, loss, reward_dict):
-    gs.logger.info(f"REWARD {mean_reward:.6g},\tLOSS {loss:.6g}")
+def show_reward_info(mean_reward, loss, learning_rate, reward_dict):
+    gs.logger.info(f"REWARD {mean_reward:.6g},\tLOSS {loss:.6g},\tLR {learning_rate:.6g}")
     # Log by pairs of keys
     keys = list(reward_dict.keys())
     max_odd_key_len = max(len(key) for key in keys[0::2])
@@ -87,15 +87,38 @@ def show_reward_info(mean_reward, loss, reward_dict):
         line += f"\t\t{key2:<{max_even_key_len+1}}: {val2:>12.6g}"
         gs.logger.info(line)
 
-def log_update(log_dir, training_run_name, update, mean_reward, loss, reward_dict_mean):
-    with open(os.path.join(log_dir, training_run_name, 'log.txt'), 'a') as f:
-        # If it is empty, write the header
-        if os.path.getsize(os.path.join(log_dir, training_run_name, 'log.txt')) == 0:
-            f.write("Training run name,Update,Mean reward,Loss")
+def log_update(log_dir, training_run_name, update, mean_reward, loss, learning_rate, reward_dict_mean):
+    log_path = os.path.join(log_dir, training_run_name, 'log.txt')
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    if not os.path.exists(log_path):
+        open(log_path, 'w').close()
+
+    file_empty = os.path.getsize(log_path) == 0
+
+    if not file_empty:
+        with open(log_path, 'r') as existing_file:
+            header_line = existing_file.readline().strip()
+        header_columns = [col.strip() for col in header_line.split(',') if col.strip()]
+        if 'Learning rate' not in header_columns:
+            with open(log_path, 'r') as existing_file:
+                lines = existing_file.readlines()
+            with open(log_path, 'w') as updated_file:
+                for idx, line in enumerate(lines):
+                    line = line.rstrip('\n')
+                    suffix = ',Learning rate' if idx == 0 else ',NaN'
+                    updated_file.write(f"{line}{suffix}\n")
+            file_empty = False
+
+    with open(log_path, 'a') as f:
+        if file_empty:
+            f.write("Training run name,Update,Mean reward,Loss,Learning rate")
             for key in reward_dict_mean:
                 f.write(f",{key}")
             f.write("\n")
-        f.write(f"{training_run_name},{update},{mean_reward},{loss}")
+            file_empty = False
+
+        f.write(f"{training_run_name},{update},{mean_reward},{loss},{learning_rate}")
         for key in reward_dict_mean:
             f.write(f",{reward_dict_mean[key]}")
         f.write("\n")
@@ -111,9 +134,10 @@ def log_plot(log_dir, run_name):
     updates = df['Update']
     rewards = df['Mean reward']
     losses = df['Loss']
+    learning_rate = df['Learning rate'] if 'Learning rate' in df.columns else None
 
     # Get the rest of the columns, whatever they are.
-    rest_of_columns = [column for column in df.columns if not column in ['Training run name', 'Update', 'Mean reward', 'Loss']]
+    rest_of_columns = [column for column in df.columns if not column in ['Training run name', 'Update', 'Mean reward', 'Loss', 'Learning rate']]
     reward_metric_columns = [column for column in rest_of_columns if not 'reward' in column.lower()]
     reward_component_columns = [column for column in rest_of_columns if 'reward' in column.lower()]
 
@@ -140,6 +164,14 @@ def log_plot(log_dir, run_name):
     ax1_twin.plot(updates, losses, color=color, label="Loss")
     ax1_twin.tick_params(axis='y', labelcolor=color)
     ax1_twin.grid(True)
+
+    if learning_rate is not None:
+        ax1_lr = ax1.twinx()
+        ax1_lr.spines.right.set_position(("axes", 1.1))
+        color = 'tab:blue'
+        ax1_lr.set_ylabel("Learning Rate", color=color)
+        ax1_lr.plot(updates, learning_rate, color=color, linestyle='--', label="Learning Rate")
+        ax1_lr.tick_params(axis='y', labelcolor=color)
 
     # Subplot 2: Reward metrics
     ax2.set_title("Reward Metrics")

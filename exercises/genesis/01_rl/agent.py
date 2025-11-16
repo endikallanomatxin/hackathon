@@ -23,6 +23,7 @@ class PPOAgent:
         gs.logger.info(f"PolicyNetwork has {param_count} parameters")
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=lr_t0, T_mult=1, eta_min=lr_min)
+        self.current_lr = lr
         self.clip_epsilon = clip_epsilon
         self.gamma = gamma
         self.update_epochs = update_epochs
@@ -153,7 +154,8 @@ class PPOAgent:
             loss.backward()
             self.optimizer.step()
             self.scheduler.step()
+            self.current_lr = self.scheduler.get_last_lr()[0]
             loss_value = loss.item()
-            gs.logger.info(f"Policy loss: {policy_loss_contrib:.6g},\tValue loss: {value_loss_contrib:.6g},\tEntropy loss: {entropy_loss_contrib:.6g}, \tlr: {self.scheduler.get_last_lr()[0]:.6g}")
+            gs.logger.info(f"Policy loss: {policy_loss_contrib:.6g},\tValue loss: {value_loss_contrib:.6g},\tEntropy loss: {entropy_loss_contrib:.6g}, \tlr: {self.current_lr:.6g}")
 
-        return loss_value
+        return loss_value, self.current_lr
