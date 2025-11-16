@@ -12,7 +12,7 @@ from log import get_latest_model, log_plot, show_reward_info, log_update
 def train(rollout_steps=400,
           batch_size=64,
           max_steps=100,
-          record=True,
+          record=False,
           load_latest_model=False):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -133,5 +133,9 @@ if __name__ == "__main__":
     parser.add_argument("--load-latest-model",
                         action="store_true",
                         help="Resume training from the most recent checkpoint if available")
+    parser.add_argument("--record",
+                        action="store_true",
+                        help="Enable video recording during checkpoints (off by default)")
     args = parser.parse_args()
-    train(load_latest_model=args.load_latest_model)
+    train(record=args.record,
+          load_latest_model=args.load_latest_model)
