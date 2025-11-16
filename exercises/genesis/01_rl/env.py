@@ -35,7 +35,7 @@ class Environment:
             profiling_options=gs.options.ProfilingOptions(
                 show_FPS = False,
             ),
-            show_viewer = False,
+            show_viewer = True,
         )
 
         if self.record:
@@ -89,13 +89,13 @@ class Environment:
         )
 
         # Reposicionamos el target de forma aleatoria para cada entorno
-        # Se genera un tensor de forma [batch_size, 3] en un rango ([0.2, 0.8], [0.2, 0.8], [0.2, 0.8])
-        new_target_pos = torch.rand(self.batch_size, 3) * torch.tensor([0.6, 0.6, 0.6]) + torch.tensor([0.2, 0.2, 0.2])
+        # Se genera un tensor de forma [batch_size, 3] en un rango ([0.1, 0.3], [-0.1, -0.1], [0.0, 0.2])
+        new_target_pos = torch.tensor([0.1, -0.1, 0.0]) + torch.rand(self.batch_size, 3) * torch.tensor([0.2, 0.2, 0.2])
         self.target_pos = new_target_pos.to(self.device)
         # Draw the target of the first 10 environments
         self.scene.clear_debug_objects()
         for i in range(min(10, self.batch_size)):
-            self.scene.draw_debug_sphere(new_target_pos[i], radius=0.05, color=(1, 0, 0))
+            self.scene.draw_debug_sphere(new_target_pos[i], radius=0.01, color=(0.9, 0.1, 0.2))
 
         self.current_step = 0
 
@@ -225,7 +225,7 @@ class Environment:
             sign * 1e-6,
             gripper_height_denom,
         )
-        reward_dict['gripper_height_reward'] = -0.1 / safe_denom
+        reward_dict['gripper_height_reward'] = - 0.01 / safe_denom
 
         # COMBINED REWARD
         reward = torch.zeros(self.batch_size, device=self.device)
