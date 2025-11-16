@@ -12,9 +12,14 @@ exponencial.
 
 hay:
 
-- Poner tornillos pequeños.
+- Poner tornillos pequeños (muy difícil actualmente)
 
 - Pasar cableado por las piezas del robot.
+
+- Descargar las impresiones 3D y poner cada una en su sitio para la cadena de
+montaje.
+
+- Proceso de calibración.
 
 
 Esas son el factor limitante para que el robot pueda autoensablarse.

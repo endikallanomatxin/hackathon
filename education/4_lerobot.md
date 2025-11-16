@@ -2,6 +2,8 @@
 
 Recursos del notion de hackathon:
 
+- [Montaje](https://www.youtube.com/watch?v=70GuJf2jbYk)
+
 - [LeRobot Tutorial](https://www.youtube.com/playlist?list=PLw5i_xDq21DN2RZWJbiAb4O1wi-DwYr8u)
 
     Parece bastante extenso y detallado.
