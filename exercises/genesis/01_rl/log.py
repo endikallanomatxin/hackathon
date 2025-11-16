@@ -7,12 +7,26 @@ def get_latest_model(log_dir,
                      run_name:str|None=None):
 
     # Check if there are any runs in the log directory
-    if len(os.listdir(log_dir)) == 0:
+    entries = os.listdir(log_dir)
+    if len(entries) == 0:
         gs.logger.info("No runs found. Using random initialization")
         return None
 
-    # Get the latest run
-    latest_run = max([f for f in os.listdir(log_dir) if f != run_name],)
+    # Keep only directories (each directory represents a run) and sort by mtime/name
+    run_dirs = []
+    for entry in entries:
+        if entry == run_name:
+            continue
+        full_path = os.path.join(log_dir, entry)
+        if os.path.isdir(full_path):
+            run_dirs.append((os.path.getmtime(full_path), entry))
+
+    if len(run_dirs) == 0:
+        gs.logger.info("No previous run directories found. Using random initialization")
+        return None
+
+    run_dirs.sort(key=lambda x: (x[0], x[1]))
+    latest_run = run_dirs[-1][1]
     gs.logger.info(f"Latest run is: {latest_run}")
 
     # Look for checkpoints folder
@@ -41,10 +55,13 @@ def get_latest_model(log_dir,
         log_file = os.path.join(log_dir, latest_run, 'log.txt')
         new_log_file = os.path.join(log_dir, run_name, 'log.txt')
         if not os.path.exists(new_log_file):
-            gs.logger.info(f"Copying log file from {log_file} to {new_log_file}")
-            with open(log_file, 'r') as f:
-                with open(new_log_file, 'w') as g:
-                    g.write(f.read())
+            if os.path.exists(log_file):
+                gs.logger.info(f"Copying log file from {log_file} to {new_log_file}")
+                with open(log_file, 'r') as f:
+                    with open(new_log_file, 'w') as g:
+                        g.write(f.read())
+            else:
+                gs.logger.warning(f"Expected log file {log_file} not found; skipping copy")
         else:
             gs.logger.info(f"Log file {new_log_file} already exists")
 
