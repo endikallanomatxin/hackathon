@@ -1,4 +1,5 @@
 from pathlib import Path
+import colorsys
 import genesis as gs
 import torch
 
@@ -12,6 +13,8 @@ class Environment:
         self.batch_size = batch_size
         self.max_steps = max_steps
         self.record = record
+        self.debug_env_count = min(4, batch_size)
+        self.env_colors = self._generate_pair_colors(self.debug_env_count)
 
         repo_root = Path(__file__).resolve().parents[2]
         robot_path = repo_root / "assets" / "SO101" / "so101_new_calib.xml"
@@ -90,13 +93,8 @@ class Environment:
 
         # Reposicionamos el target de forma aleatoria para cada entorno
         # Se genera un tensor de forma [batch_size, 3] en un rango ([0.1, 0.3], [-0.1, -0.1], [0.0, 0.2])
-        new_target_pos = torch.tensor([0.1, -0.1, 0.0]) + torch.rand(self.batch_size, 3) * torch.tensor([0.2, 0.2, 0.2])
+        new_target_pos = torch.tensor([0.2, -0.1, 0.2]) + torch.rand(self.batch_size, 3) * torch.tensor([0.2, 0.2, 0.2])
         self.target_pos = new_target_pos.to(self.device)
-        # Draw the target of the first 10 environments
-        self.scene.clear_debug_objects()
-        for i in range(min(10, self.batch_size)):
-            self.scene.draw_debug_sphere(new_target_pos[i], radius=0.01, color=(0.9, 0.1, 0.2))
-
         self.current_step = 0
 
         # Dejar que la simulación se estabilice
@@ -105,6 +103,13 @@ class Environment:
 
         if self.record:
             self.cam.start_recording()
+
+        gripper_pos = torch.as_tensor(
+            self.robot.get_link(self.gripper_link_name).get_pos(),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        self._update_debug_markers(gripper_pos)
 
         # Devuelve las observaciones iniciales
         return self.get_obs()
@@ -232,6 +237,7 @@ class Environment:
                 reward += reward_dict[key].clone()
                 reward_dict[key] = reward_dict[key].mean().clone().detach().cpu().item()
 
+        self._update_debug_markers(gripper_pos)
         return reward, reward_dict
 
     def step(self, actions, record=False):
@@ -258,6 +264,32 @@ class Environment:
             gs.logger.warning("Video recording requested but record=False for this environment")
             return
         self.cam.stop_recording(save_to_filename=filename, fps=30)
+
+    def _generate_pair_colors(self, count):
+        if count <= 0:
+            return []
+        colors = []
+        golden_ratio = 0.61803398875  # Spread hues evenly
+        for idx in range(count):
+            hue = (idx * golden_ratio) % 1.0
+            rgb = colorsys.hsv_to_rgb(hue, 0.65, 0.95)
+            colors.append(rgb)
+        return colors
+
+    def _update_debug_markers(self, gripper_pos: torch.Tensor):
+        if self.scene is None or not hasattr(self, 'target_pos'):
+            return
+        debug_envs = min(self.debug_env_count, self.batch_size)
+        if debug_envs <= 0:
+            return
+        self.scene.clear_debug_objects()
+        for idx in range(debug_envs):
+            color = tuple(self.env_colors[idx % len(self.env_colors)])
+            target = self.target_pos[idx].detach().cpu().tolist()
+            self.scene.draw_debug_sphere(target, radius=0.01, color=color)
+            grip = gripper_pos[idx].detach().cpu().tolist()
+            # Slightly larger radius so it looks attached to the robot
+            self.scene.draw_debug_sphere(grip, radius=0.015, color=color)
 
 def actions_to_angles(actions: torch.Tensor):
     """
