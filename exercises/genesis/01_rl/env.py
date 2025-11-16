@@ -71,7 +71,7 @@ class Environment:
             'gripper',
         ]
         self.dofs_idx = [self.robot.get_joint(name).dof_idx_local for name in self.jnt_names]
-        self.gripper_link_name = 'gripper'
+        self.gripper_link_name = 'gripper_tip'
         self.forearm_link_name = 'lower_arm'
 
         # Para este ejemplo se asume que todos los entornos avanzan de forma sincronizada.
