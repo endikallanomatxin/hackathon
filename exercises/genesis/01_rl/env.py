@@ -163,7 +163,7 @@ class Environment:
             eps=1e-6,
         )
         reward_dict['direction_similarity'] = torch.mean(direction_similarity).clone().detach().cpu()
-        reward_dict['direction_similarity_reward'] = 1*direction_similarity*(gripper_velocity_mag.clone().detach())**2  # Make it important only if moving
+        reward_dict['direction_similarity_reward'] = 0.1*direction_similarity*(gripper_velocity_mag.clone().detach())**2  # Make it important only if moving
 
         # PENALTY: contact_force_sum
         # Obtenemos la información de contactos de la simulación.
