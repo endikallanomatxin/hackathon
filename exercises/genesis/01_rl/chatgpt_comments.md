@@ -58,22 +58,6 @@ El gradiente de `-(H - H_target)` con respecto a los parámetros es simplemente 
 
 No está mal, pero el comentario `# Entropía objetivo` es engañoso: no estáis haciendo un esquema tipo SAC con adaptación de coeficiente a un target entropy.
 
-### 2.5. Falta de clipping de gradiente
-
-No hay clipping de gradiente en PPO:
-
-```python
-loss.backward()
-self.optimizer.step()
-```
-
-Con una política relativamente grande (transformer) y motor físico, el gradiente puede explotar. Lo típico:
-
-```python
-torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=0.5)
-```
-
-antes del `optimizer.step()`. Esto mejora mucho la estabilidad.
 
 ### 2.6. Scheduler dentro del bucle PPO
 
