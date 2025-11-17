@@ -14,7 +14,7 @@ class PPOAgent:
                  lr_t0=100,
                  clip_epsilon=0.2,
                  gamma=0.99,
-                 update_epochs=8,
+                 update_epochs=16,
                  from_checkpoint=None,
     ):
         self.device = device
