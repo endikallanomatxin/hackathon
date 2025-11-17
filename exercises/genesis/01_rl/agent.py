@@ -111,7 +111,6 @@ class PPOAgent:
         advantages = advantages.to(self.device)
         returns = returns.to(self.device)
 
-        target_entropy = actions.shape[-1]  # Entropía objetivo para la bonificación
         # Hiperparámetros para balancear las pérdidas
         value_coef = 0.2      # Coeficiente para la pérdida del valor
         entropy_coef = 0.01  # Coeficiente para la bonificación de entropía
@@ -142,8 +141,7 @@ class PPOAgent:
 
             # Pérdida por entropía
             entropy = dist.entropy().sum(dim=-1)  # Shape [T*B]
-            entropy_loss_batch = - (entropy - target_entropy)  # Shape [T*B]
-            entropy_loss_contrib = entropy_coef * entropy_loss_batch.mean()
+            entropy_loss_contrib = entropy_coef * (-entropy.mean())
 
             # Pérdida total (con bonificación de entropía)
             loss = policy_loss_contrib + value_loss_contrib + entropy_loss_contrib

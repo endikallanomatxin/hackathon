@@ -1,21 +1,3 @@
-## 2. PPOAgent: puntos no estándar o problemáticos
-
-### 2.4. Entropía objetivo que no actúa realmente como “target entropy”
-
-```python
-target_entropy = actions.shape[-1]
-entropy = dist.entropy().sum(dim=-1)
-entropy_loss_batch = - (entropy - target_entropy)
-entropy_loss_contrib = entropy_coef * entropy_loss_batch.mean()
-```
-
-El gradiente de `-(H - H_target)` con respecto a los parámetros es simplemente `-∂H/∂θ`; el término `target_entropy` es una constante que desaparece en la derivada. En la práctica es exactamente igual a usar `-H` (como se hace habitualmente en PPO para un bonus de entropía simple).
-
-No está mal, pero el comentario `# Entropía objetivo` es engañoso: no estáis haciendo un esquema tipo SAC con adaptación de coeficiente a un target entropy.
-
-
----
-
 ## 3. Bucle de recolección de datos / temporalidad
 
 ### 3.2. No se usan `dones` ni resets parciales
