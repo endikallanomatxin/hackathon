@@ -1,6 +1,6 @@
 from pathlib import Path
-import math
 import colorsys
+import xml.etree.ElementTree as ET
 import genesis as gs
 import torch
 
@@ -75,6 +75,11 @@ class Environment:
             'gripper',
         ]
         self.dofs_idx = [self.robot.get_joint(name).dof_idx_local for name in self.jnt_names]
+        joint_limits = self._load_joint_limits(robot_path)
+        lower = [joint_limits[name][0] for name in self.jnt_names]
+        upper = [joint_limits[name][1] for name in self.jnt_names]
+        self.joint_lower = torch.tensor(lower, device=self.device, dtype=torch.float32)
+        self.joint_upper = torch.tensor(upper, device=self.device, dtype=torch.float32)
         self.gripper_link_name = 'gripper_tip'
         self.forearm_link_name = 'lower_arm'
 
@@ -247,7 +252,7 @@ class Environment:
         Aplica las acciones a cada entorno, avanza la simulación y devuelve (obs, reward, done, info)
         """
         # Se asume que control_dofs_position admite batch actions directamente
-        angles = actions.to(dtype=torch.float32)
+        angles = actions_to_angles(actions, self.joint_lower, self.joint_upper)
         self.robot.control_dofs_position(angles, self.dofs_idx)
         self.scene.step()
         self.current_step += 1
@@ -292,3 +297,29 @@ class Environment:
             # Slightly larger radius so it looks attached to the robot
             self.scene.draw_debug_sphere(grip, radius=0.015, color=color)
 
+    def _load_joint_limits(self, robot_path: Path):
+        tree = ET.parse(robot_path)
+        root = tree.getroot()
+        limits = {}
+        for joint in root.findall(".//joint"):
+            name = joint.attrib.get('name')
+            rng = joint.attrib.get('range')
+            if not name or not rng:
+                continue
+            lo, hi = map(float, rng.split())
+            limits[name] = (lo, hi)
+        missing = [name for name in self.jnt_names if name not in limits]
+        if missing:
+            raise ValueError(f"Missing joint limits for: {missing}")
+        return limits
+
+
+def actions_to_angles(actions: torch.Tensor, joint_lower: torch.Tensor, joint_upper: torch.Tensor):
+    """
+    Map normalized policy outputs in [-1, 1] to the actual joint limits so each
+    actuator can use its full physical range.
+    """
+    normalized = torch.clamp(actions, -1.0, 1.0).to(dtype=torch.float32)
+    lower = joint_lower.to(device=normalized.device, dtype=normalized.dtype)
+    upper = joint_upper.to(device=normalized.device, dtype=normalized.dtype)
+    return lower + 0.5 * (normalized + 1.0) * (upper - lower)
