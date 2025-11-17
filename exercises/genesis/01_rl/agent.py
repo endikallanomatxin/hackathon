@@ -114,8 +114,8 @@ class PPOAgent:
 
         target_entropy = actions.shape[-1]  # Entropía objetivo para la bonificación
         # Hiperparámetros para balancear las pérdidas
-        value_coef = 0.1      # Coeficiente para la pérdida del valor
-        entropy_coef = 0.001  # Coeficiente para la bonificación de entropía
+        value_coef = 0.2      # Coeficiente para la pérdida del valor
+        entropy_coef = 0.01  # Coeficiente para la bonificación de entropía
 
         loss_value = 0.0
         for i in range(self.update_epochs):
