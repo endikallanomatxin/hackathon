@@ -112,7 +112,7 @@ class PPOAgent:
         returns = returns.to(self.device)
 
         # Hiperparámetros para balancear las pérdidas
-        value_coef = 0.2      # Coeficiente para la pérdida del valor
+        value_coef = 0.4     # Coeficiente para la pérdida del valor
         entropy_coef = 0.01  # Coeficiente para la bonificación de entropía
 
         loss_value = 0.0
