@@ -121,7 +121,7 @@ class PPOAgent:
             mean, std, value_pred = self.policy(obs)  # value_pred shape: [T*B, 1]
             mean = torch.nan_to_num(mean, nan=0.0, posinf=1e4, neginf=-1e4)
             std = torch.nan_to_num(std, nan=1.0, posinf=1e4, neginf=-1e4)
-            std = torch.clamp(std, min=1e-3)
+            std = torch.clamp(std, min=1e-3, max=1e3)
             value_pred = torch.nan_to_num(value_pred, nan=0.0, posinf=1e4, neginf=-1e4)
             dist = torch.distributions.Normal(mean, std)
             new_log_probs = dist.log_prob(actions).sum(dim=-1)

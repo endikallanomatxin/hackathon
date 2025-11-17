@@ -1,7 +1,5 @@
 # TODO
 
-- Revisar comentarios de chatGPT
-
 - Probar differential simulation
 
 - Darle historial de pasos previos al modelo
