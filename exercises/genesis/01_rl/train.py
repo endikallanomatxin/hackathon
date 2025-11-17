@@ -10,7 +10,7 @@ from agent import PPOAgent
 from log import get_latest_model, log_plot, show_reward_info, log_update
 
 def train(rollout_steps=400,
-          batch_size=256,
+          batch_size=64,
           max_steps=100,
           show_viewer=False,
           record=False,
