@@ -89,7 +89,7 @@ class PolicyNetwork(nn.Module):
         tokens_flat = self.post_tokens(tokens_flat)
 
         policy_latent = self.policy_head(tokens_flat)
-        action_mean = self.action_mean(policy_latent)
+        action_mean = self.action_mean(policy_latent) * torch.pi
         action_std = self.action_std(policy_latent)
 
         value = self.value_head(tokens_flat).squeeze(-1)

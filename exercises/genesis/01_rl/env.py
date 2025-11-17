@@ -1,4 +1,5 @@
 from pathlib import Path
+import math
 import colorsys
 import genesis as gs
 import torch
@@ -80,8 +81,8 @@ class Environment:
         # Para este ejemplo se asume que todos los entornos avanzan de forma sincronizada.
         self.current_step = 0
 
-        self.obs_dim = 2*len(self.dofs_idx) + 2*3
-        self.act_dim = 2*len(self.dofs_idx)
+        self.obs_dim = len(self.dofs_idx) + 2*3
+        self.act_dim = len(self.dofs_idx)
 
         if self.record:
             self.cam.start_recording()
@@ -123,8 +124,6 @@ class Environment:
             device=self.device,
             dtype=torch.float32,
         )  # Shape [batch_size, n_dofs]
-        dof_cos = torch.cos(dof_ang)
-        dof_sin = torch.sin(dof_ang)
         gripper_pos = torch.as_tensor(
             self.robot.get_link(self.gripper_link_name).get_pos(),
             device=self.device,
@@ -136,7 +135,7 @@ class Environment:
             dtype=torch.float32,
         )  # Shape [batch_size, 3]
 
-        obs = torch.cat([dof_cos, dof_sin, gripper_pos, target_pos], dim=1)  # Shape [batch_size, obs_dim=23]
+        obs = torch.cat([dof_ang, gripper_pos, target_pos], dim=1)
         # Genesis can occasionally return NaNs if the simulation for one of the
         # batched environments becomes unstable, so clamp the observations to
         # a safe numeric range before handing them to the policy.
@@ -248,7 +247,7 @@ class Environment:
         Aplica las acciones a cada entorno, avanza la simulación y devuelve (obs, reward, done, info)
         """
         # Se asume que control_dofs_position admite batch actions directamente
-        angles = actions_to_angles(actions)
+        angles = actions.to(dtype=torch.float32)
         self.robot.control_dofs_position(angles, self.dofs_idx)
         self.scene.step()
         self.current_step += 1
@@ -293,12 +292,3 @@ class Environment:
             # Slightly larger radius so it looks attached to the robot
             self.scene.draw_debug_sphere(grip, radius=0.015, color=color)
 
-def actions_to_angles(actions: torch.Tensor):
-    """
-    actions contains the trigonometric functions of the angles
-    this function converts them to angles between -pi and pi
-    """
-    n_dofs = actions.shape[-1] // 2
-    cos_components = actions[..., :n_dofs]
-    sin_components = actions[..., n_dofs:]
-    return torch.atan2(sin_components, cos_components)
