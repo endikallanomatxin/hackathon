@@ -4,11 +4,14 @@ import genesis as gs
 import torch
 
 class Environment:
-    def __init__(self,
-                 device: torch.device,
-                 batch_size=4,
-                 max_steps=100,
-                 record=False):
+    def __init__(
+            self,
+            device: torch.device,
+            batch_size=4,
+            max_steps=100,
+            show_viewer=False,
+            record=False
+    ):
         self.device = device
         self.batch_size = batch_size
         self.max_steps = max_steps
@@ -38,7 +41,7 @@ class Environment:
             profiling_options=gs.options.ProfilingOptions(
                 show_FPS = False,
             ),
-            show_viewer = True,
+            show_viewer = show_viewer,
         )
 
         if self.record:
@@ -167,7 +170,7 @@ class Environment:
 
         # PENALTY: contact_force_sum
         # Obtenemos la información de contactos de la simulación.
-        contact_info = self.robot.get_contacts()  
+        contact_info = self.robot.get_contacts()
         # contact_info es un diccionario con claves: 'geom_a', 'geom_b', 'link_a', 'link_b',
         # 'position', 'force_a', 'force_b', 'valid_mask'
         # que tiene dimensiones [n_envs, n_contacts, ...]
