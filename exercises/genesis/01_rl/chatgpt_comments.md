@@ -1,37 +1,3 @@
-Voy por partes: agente (PPO), entorno, red y bucle de entrenamiento. Primero lo que está razonablemente bien, luego las cosas raras / mejorables.
-
----
-
-## 1. Cosas que están bien planteadas
-
-* Separación clara de módulos: `Environment`, `PPOAgent`, `PolicyNetwork`, `train`. Esto facilita tocar una parte sin romper el resto.
-* Uso de entornos vectorizados: `scene.build(n_envs=batch_size)` y todo el reward/obs dimensionado por batch → bien para throughput en GPU.
-* Política gaussiana con log_probs guardados y objetivo PPO “clipped”:
-
-  ```python
-  ratio = torch.exp(new_log_probs - old_log_probs)
-  surr1 = ratio * advantages.detach()
-  surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * advantages.detach()
-  policy_loss_batch = -torch.min(surr1, surr2)
-  ```
-
-  Esto está básicamente como en PPO “de libro”.
-* Normalización de ventajas:
-
-  ```python
-  advantages = returns - flat_values
-  advantages = advantages / (advantages.std() + 1e-8)
-  ```
-
-  Es práctica bastante estándar y ayuda a la estabilidad.
-* Cuidados numéricos: `torch.nan_to_num` en observaciones, acciones, returns, value_pred, etc. Tiene sentido con motores físicos que a veces revientan y dan NaNs/Infs.
-* Desacople de env/política con `torch.no_grad()` durante la recolección de trayectorias → ahorra memoria y es lo correcto.
-* Logging bastante completo de recompensas parciales (`reward_dict`) y guardado periódico de checkpoints y vídeos.
-
-La estructura general es de un PPO on-policy razonable para un entorno continuo tipo brazo robótico.
-
----
-
 ## 2. PPOAgent: puntos no estándar o problemáticos
 
 ### 2.1. `compute_returns`: retorno “promedio descontado”
@@ -78,24 +44,6 @@ for t in reversed(range(T)):
 
 En tu código ni pasas `dones` en el rollout, ni usas `value` de la última observación para bootstrap. Eso introduce un sesgo fuerte cerca del final del horizonte artificial del rollout.
 
-### 2.3. Normalizar `returns` y luego usarlos para el valor
-
-```python
-returns = (returns - returns.mean()) / (returns.std() + 1e-8)
-...
-advantages = returns - flat_values
-```
-
-Estás entrenando la red de valor a aproximar **returns normalizados** (z-score) en vez de la suma de recompensas en escala absoluta. No es necesariamente “incorrecto”, pero:
-
-* `values` en el rollout están en la escala actual de la red.
-* `returns` se vuelven z-score de ese batch concreto.
-* Si se desalinean, al principio las ventajas pueden ser muy raras.
-
-Si quieres algo más estándar:
-
-* No normalices `returns`, solo normaliza `advantages`.
-* O, si quieres mantener la normalización de `returns`, entonces considera normalizar también los outputs de valor al mismo espacio (por ejemplo, entrenando la red a predecir returns normalizados de forma consistente). Ahora mismo está implícito, pero es más fácil razonar si returns permanecen sin normalizar.
 
 ### 2.4. Entropía objetivo que no actúa realmente como “target entropy”
 

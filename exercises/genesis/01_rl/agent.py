@@ -87,7 +87,6 @@ class PPOAgent:
 
         # Calcular retornos descontados para cada entorno
         returns = self.compute_returns(rewards, dones=dones)  # [T, B]
-        returns = (returns - returns.mean()) / (returns.std() + 1e-8)
 
         # Aplanar tensores de [T, B, ...] a [T*B, ...]
         T, B = rewards.shape
