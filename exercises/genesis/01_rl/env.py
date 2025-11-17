@@ -196,7 +196,7 @@ class Environment:
         # Sumamos las fuerzas de contacto en cada entorno y luego promediamos.
         contact_force_sum = force_magnitudes.sum(dim=1)  # [n_envs]
         reward_dict['contact_force_sum'] = torch.mean(contact_force_sum).clone().detach().cpu()
-        reward_dict['contact_force_sum_reward'] = -0.02*contact_force_sum
+        reward_dict['contact_force_sum_reward'] = -0.1*contact_force_sum
 
         # PENALTY: links_contact_force
         links_contact_force = torch.as_tensor(self.robot.get_links_net_contact_force(), device=self.device)  # Returns a tensor of shape [batch_size, n_links, 3]
@@ -204,7 +204,7 @@ class Environment:
         link_force_magnitudes = torch.linalg.vector_norm(links_contact_force, dim=-1)  # [batch_size, n_links]
         links_contact_force = torch.mean(link_force_magnitudes, dim=1)  # [batch_size]
         reward_dict['links_force_sum'] = torch.mean(links_contact_force).clone().detach().cpu()
-        reward_dict['links_force_sum_reward'] = -0.08*links_contact_force
+        reward_dict['links_force_sum_reward'] = -0.6*links_contact_force
 
         # PENALTY: gripper_velocity
         reward_dict['gripper_velocity'] = torch.mean(gripper_velocity_mag).clone().detach().cpu()
@@ -232,20 +232,6 @@ class Environment:
         forearm_height = forearm_pos[:, 2]
         reward_dict['forearm_height'] = torch.mean(forearm_height).clone().detach().cpu()
         reward_dict['forearm_height_reward'] = 0.02*forearm_height
-
-        # PENALTY: low gripper_height (penalizar que esté muy abajo)
-        gripper_height = gripper_pos[:, 2]
-        reward_dict['gripper_height'] = torch.mean(gripper_height).clone().detach().cpu()
-        gripper_height_denom = gripper_height + 0.1
-        # Replace near-zero denominators but keep the physical sign to avoid NaNs.
-        sign = torch.sign(gripper_height_denom)
-        sign = torch.where(sign == 0, torch.ones_like(sign), sign)
-        safe_denom = torch.where(
-            torch.abs(gripper_height_denom) < 1e-6,
-            sign * 1e-6,
-            gripper_height_denom,
-        )
-        reward_dict['gripper_height_reward'] = - 0.004 / safe_denom
 
         # COMBINED REWARD
         reward = torch.zeros(self.batch_size, device=self.device)
