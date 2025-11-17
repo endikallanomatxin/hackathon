@@ -34,38 +34,6 @@ No está mal, pero el comentario `# Entropía objetivo` es engañoso: no estáis
 
 ## 3. Bucle de recolección de datos / temporalidad
 
-### 3.1. Una acción cada 10 steps de simulación
-
-```python
-inference_every_n_steps = 10
-
-for inference in range(max_steps // inference_every_n_steps):
-    with torch.no_grad():
-        action, log_prob, value = agent.select_action_and_get_value(obs)
-
-    ...
-    for step in range(inference_every_n_steps):
-        with torch.no_grad():
-            next_obs, reward, reward_dict = env.step(action, record=checkpoint)
-        reward_sum = reward_sum + reward
-    reward_mean = reward_sum / inference_every_n_steps
-```
-
-Esto hace:
-
-* Misma acción para 10 pasos de simulación seguidos.
-* Guardas una sola observación y recompensa promedio por cada bloque de 10 steps.
-
-Consecuencias:
-
-* El factor de descuento `gamma` se aplica por bloque, no por step. El “paso temporal” del agente es 10× el de la simulación.
-* Si el entorno es rápido y suave, puede estar bien; pero normalmente PPO se implementa a “step de simulación = step de agente”.
-
-Recomendaciones:
-
-* O bien reduces `inference_every_n_steps` a 1 para un comportamiento PPO estándar.
-* O bien, si quieres mantenerlo por eficiencia, sé consciente de que gamma y horizon son sobre bloques, no sobre steps físicos. A veces se ajusta `gamma_block = gamma_step**block_size`.
-
 ### 3.2. No se usan `dones` ni resets parciales
 
 `Environment.step` no devuelve `done`, y en el rollout construyes:

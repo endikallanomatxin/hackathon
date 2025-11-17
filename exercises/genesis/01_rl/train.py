@@ -44,7 +44,7 @@ def train(batch_size=64,
 
     os.makedirs(os.path.join(log_dir, training_run_name, 'checkpoints'))
 
-    inference_every_n_steps = 10
+    inference_every_n_steps = 4
     checkpoint_every_n_updates = 100
     plot_every_n_updates = 1
 
