@@ -9,9 +9,8 @@ from env import Environment
 from agent import PPOAgent
 from log import get_latest_model, log_plot, show_reward_info, log_update
 
-def train(rollout_steps=400,
-          batch_size=64,
-          max_steps=100,
+def train(batch_size=64,
+          max_steps=120,
           show_viewer=False,
           record=False,
           load_latest_model=False):
@@ -66,7 +65,7 @@ def train(rollout_steps=400,
         checkpoint = update % checkpoint_every_n_updates == 0
         plot = update % plot_every_n_updates == 0
 
-        for inferece in range(rollout_steps // inference_every_n_steps):
+        for inferece in range(max_steps // inference_every_n_steps):
             with torch.no_grad():
                 action, log_prob, value = agent.select_action_and_get_value(obs)
 

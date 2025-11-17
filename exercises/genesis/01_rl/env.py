@@ -7,8 +7,8 @@ class Environment:
     def __init__(
             self,
             device: torch.device,
-            batch_size=4,
-            max_steps=100,
+            batch_size,
+            max_steps,
             show_viewer=False,
             record=False
     ):
