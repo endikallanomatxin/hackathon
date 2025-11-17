@@ -10,5 +10,7 @@
 
 - Pasar logging a tensorboard
 
+- Implementar finalización de tarea por éxito.
+
 - Probar tareas más complejas
 

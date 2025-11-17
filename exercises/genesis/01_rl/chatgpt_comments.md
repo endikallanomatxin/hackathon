@@ -1,32 +1,3 @@
-## 3. Bucle de recolección de datos / temporalidad
-
-### 3.2. No se usan `dones` ni resets parciales
-
-`Environment.step` no devuelve `done`, y en el rollout construyes:
-
-```python
-rollout = {
-    'obs': ...,
-    'actions': ...,
-    'log_probs': ...,
-    'values': ...,
-    'rewards': ...,
-}
-```
-
-No hay episodios que terminen antes de agotar `max_steps // inference_every_n_steps`. Esto implica:
-
-* Todo el rollout es un episodio truncado fijo.
-* `compute_returns` nunca sabe dónde “acaba” un episodio realmente; si algún día queréis resetear cuando el brazo toca el objetivo, no hay soporte.
-
-Si quieres algo más cercano a lo estándar:
-
-* Añadir un criterio de finalización en el entorno (por ejemplo, distancia < umbral, o paso > max_steps).
-* Devolver `done` por entorno individual.
-* Guardarlo en el rollout y usarlo en `compute_returns`/GAE.
-
----
-
 ## 4. Entorno y recompensa
 
 ### 4.1. Observaciones
@@ -44,37 +15,6 @@ Mejora típica: añadir a `obs`:
 
 * Velocidades de articulaciones (`get_dofs_velocity`).
 * Velocidad lineal y angular del efector, si son relevantes.
-
-### 4.2. `gripper_height_reward`: cambio de signo raro
-
-```python
-gripper_height = gripper_pos[:, 2]
-gripper_height_denom = gripper_height + 0.1
-...
-safe_denom = ...
-reward_dict['gripper_height_reward'] = - 0.004 / safe_denom
-```
-
-Si miras el signo:
-
-* Si `gripper_height` ≈ 0.0 → denom ≈ 0.1 → reward ≈ -0.04 (penalización moderada).
-* Si `gripper_height` ≪ -0.1 → denom negativo, por ejemplo -0.2 → reward = -0.004 / -0.2 = +0.02 (¡recompensa positiva por estar muy abajo!).
-* Si `gripper_height` ≈ -0.1 → denom ≈ 0 → safe_denom ≈ 1e-6 → reward ≈ -4000 (enorme penalización).
-
-O sea, el diseño actual:
-
-* Penaliza mucho estar justo en -0.1.
-* Penaliza menos estar por encima de -0.1.
-* Llega a **recompensar** estar muy por debajo de -0.1.
-
-Probablemente querías algo como “cuanto más bajo, peor” de forma monótona. Una versión más razonable podría ser:
-
-```python
-safe_denom = torch.clamp(gripper_height + 0.1, min=1e-3)
-reward_dict['gripper_height_reward'] = -0.004 * (1.0 / safe_denom).clamp(max=algo)
-```
-
-o directamente una penalización lineal o cuadrática suave respecto a un suelo deseado.
 
 
 ### 4.5. Eficiencia
@@ -155,14 +95,6 @@ Si quieres poder repetir runs, conviene fijarlos. Sobre todo con motores físico
 
 Si tuviera que priorizar cambios para mejorar estabilidad/desempeño:
 
-1. **Retornos y valor**
-
-   * Añadir, a medio plazo, bootstrap con el valor del último estado (y eventualmente GAE).
-
-2. **Temporalidad**
-
-   * Si se mantiene el bloque de 10 steps, ajustar gamma y ser consciente de que el “step” del agente es el bloque.
-
 3. **Recompensas**
 
    * Arreglar la lógica de `gripper_height_reward` para que penalice monotonamente alturas bajas y no recompense valores negativos grandes.
@@ -171,7 +103,6 @@ Si tuviera que priorizar cambios para mejorar estabilidad/desempeño:
 4. **Estabilidad de PPO**
 
    * Opcional: limitar también `std` por arriba.
-   * Simplificar el término de entropía a `entropy_loss = -entropy.mean()` si no quieres target entropy real.
 
 5. **Observaciones**
 
