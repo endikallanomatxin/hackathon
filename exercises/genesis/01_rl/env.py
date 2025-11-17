@@ -185,10 +185,9 @@ class Environment:
 
         # PENALTY: links_contact_force
         links_contact_force = torch.as_tensor(self.robot.get_links_net_contact_force(), device=self.device)  # Returns a tensor of shape [batch_size, n_links, 3]
-        # Average for each link
-        links_contact_force = torch.mean(links_contact_force, dim=1)  # [batch_size, 3]
-        # Average for each environment
-        links_contact_force = torch.linalg.vector_norm(links_contact_force, dim=1)  # [batch_size]
+        # Compute per-link magnitudes before averaging so opposing forces do not cancel out.
+        link_force_magnitudes = torch.linalg.vector_norm(links_contact_force, dim=-1)  # [batch_size, n_links]
+        links_contact_force = torch.mean(link_force_magnitudes, dim=1)  # [batch_size]
         reward_dict['links_force_sum'] = torch.mean(links_contact_force).clone().detach().cpu()
         reward_dict['links_force_sum_reward'] = -0.08*links_contact_force
 
