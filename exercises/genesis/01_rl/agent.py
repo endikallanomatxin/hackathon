@@ -9,7 +9,7 @@ class PPOAgent:
                  device:torch.device,
                  obs_dim,
                  act_dim,
-                 lr=2e-5,
+                 lr=4e-5,
                  lr_min=1e-5,
                  lr_t0=100,
                  clip_epsilon=0.2,
