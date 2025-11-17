@@ -1,34 +1,5 @@
 ## 2. PPOAgent: puntos no estándar o problemáticos
 
-### 2.1. `compute_returns`: retorno “promedio descontado”
-
-```python
-next_return = rewards[t] + self.gamma * next_return * done_mask
-steps_left = max(1, T - t)
-if self.gamma != 1:
-    weight_sum = (1 - self.gamma ** steps_left) / (1 - self.gamma)
-else:
-    weight_sum = float(steps_left)
-returns[t] = next_return / weight_sum
-```
-
-Esto no es el retorno descontado estándar ( G_t = \sum_k \gamma^k r_{t+k} ), sino algo así como un **promedio** de esa suma. Esto cambia la semántica del valor que aprende la red (aprende “recompensa media descontada” en vez de “suma descontada”).
-
-Problema práctico:
-
-* El valor (V) deja de ser estrictamente “expected return” canónico.
-* Si más adelante quieres comparar curvas de aprendizaje con otras implementaciones de PPO, o hacer bootstrap adecuado, esto te complica la vida.
-
-Recomendación: quitar el `weight_sum` y usar retorno clásico:
-
-```python
-next_return = 0
-for t in reversed(range(T)):
-    done_mask = 1.0 - dones[t].float()
-    next_return = rewards[t] + self.gamma * next_return * done_mask
-    returns[t] = next_return
-```
-
 ### 2.2. No hay bootstrap con el valor final
 
 Actualmente siempre arrancas con `next_return = torch.zeros(B)` y nunca incorporas el valor del último estado. Para tareas continuas o episodios truncados, lo normal es algo tipo:
@@ -58,19 +29,6 @@ El gradiente de `-(H - H_target)` con respecto a los parámetros es simplemente 
 
 No está mal, pero el comentario `# Entropía objetivo` es engañoso: no estáis haciendo un esquema tipo SAC con adaptación de coeficiente a un target entropy.
 
-
-### 2.6. Scheduler dentro del bucle PPO
-
-```python
-for i in range(self.update_epochs):
-    ...
-    self.scheduler.step()
-    self.current_lr = self.scheduler.get_last_lr()[0]
-```
-
-Estás dando un “paso” de scheduler en cada epoch interna de PPO. Si `lr_t0=100` significa “100 steps” para el primer ciclo, en realidad esos “steps” son `update_epochs` por update global. No es grave, pero conviene ser consciente: la escala temporal del scheduler está ligada a `update_epochs`, no al número de rollouts.
-
-También tienes `zero_grad()` dos veces dentro del loop (al principio y justo antes de `loss.backward()`); una sola llamada es suficiente.
 
 ---
 

@@ -118,7 +118,6 @@ class PPOAgent:
 
         loss_value = 0.0
         for i in range(self.update_epochs):
-            self.optimizer.zero_grad()
             # Forward pass para obtener parámetros de la política y el valor
             mean, std, value_pred = self.policy(obs)  # value_pred shape: [T*B, 1]
             mean = torch.nan_to_num(mean, nan=0.0, posinf=1e4, neginf=-1e4)
