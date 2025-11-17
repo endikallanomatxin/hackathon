@@ -96,7 +96,7 @@ class Environment:
 
         # Reposicionamos el target de forma aleatoria para cada entorno
         # Se genera un tensor de forma [batch_size, 3] en un rango ([0.1, 0.3], [-0.1, -0.1], [0.0, 0.2])
-        new_target_pos = torch.tensor([0.2, -0.1, 0.2]) + torch.rand(self.batch_size, 3) * torch.tensor([0.2, 0.2, 0.2])
+        new_target_pos = torch.tensor([0.2, -0.15, 0.0]) + torch.rand(self.batch_size, 3) * torch.tensor([0.2, 0.30, 0.30])
         self.target_pos = new_target_pos.to(self.device)
         self.current_step = 0
 
