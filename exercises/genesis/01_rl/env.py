@@ -86,7 +86,8 @@ class Environment:
         # Para este ejemplo se asume que todos los entornos avanzan de forma sincronizada.
         self.current_step = 0
 
-        self.obs_dim = len(self.dofs_idx) + 2*3
+        # Observations include joint positions/velocities plus gripper pose/velocity and target
+        self.obs_dim = 2*len(self.dofs_idx) + 3 + 3 + 3
         self.act_dim = len(self.dofs_idx)
 
         if self.record:
@@ -129,8 +130,18 @@ class Environment:
             device=self.device,
             dtype=torch.float32,
         )  # Shape [batch_size, n_dofs]
+        dof_vel = torch.as_tensor(
+            self.robot.get_dofs_velocity(self.dofs_idx),
+            device=self.device,
+            dtype=torch.float32,
+        )  # Shape [batch_size, n_dofs]
         gripper_pos = torch.as_tensor(
             self.robot.get_link(self.gripper_link_name).get_pos(),
+            device=self.device,
+            dtype=torch.float32,
+        )  # Shape [batch_size, 3]
+        gripper_vel = torch.as_tensor(
+            self.robot.get_link(self.gripper_link_name).get_vel(),
             device=self.device,
             dtype=torch.float32,
         )  # Shape [batch_size, 3]
@@ -140,7 +151,7 @@ class Environment:
             dtype=torch.float32,
         )  # Shape [batch_size, 3]
 
-        obs = torch.cat([dof_ang, gripper_pos, target_pos], dim=1)
+        obs = torch.cat([dof_ang, dof_vel, gripper_pos, gripper_vel, target_pos], dim=1)
         # Genesis can occasionally return NaNs if the simulation for one of the
         # batched environments becomes unstable, so clamp the observations to
         # a safe numeric range before handing them to the policy.

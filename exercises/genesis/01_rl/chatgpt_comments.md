@@ -1,22 +1,5 @@
 ## 4. Entorno y recompensa
 
-### 4.1. Observaciones
-
-```python
-obs = torch.cat([dof_cos, dof_sin, gripper_pos, target_pos], dim=1)
-```
-
-Puntos:
-
-* Codificar los ángulos como cos/sin es una buena idea para evitar discontinuidad 2π/0.
-* No incluyes velocidades de articulaciones ni del efector como observación, aunque sí las usas en la recompensa. Puede hacer el control más difícil, porque la política solo ve posiciones, no sabe “qué velocidad lleva” el brazo.
-
-Mejora típica: añadir a `obs`:
-
-* Velocidades de articulaciones (`get_dofs_velocity`).
-* Velocidad lineal y angular del efector, si son relevantes.
-
-
 ### 4.5. Eficiencia
 
 Dentro de `compute_reward` haces muchas llamadas a:
@@ -29,35 +12,6 @@ Dentro de `compute_reward` haces muchas llamadas a:
 Cada una probablemente implica un salto a C++/CUDA. No está “mal”, pero si el entorno empieza a ser pesado podrías cachear algunas cosas o llamar una sola vez por paso si la API lo permite.
 
 ---
-
-## 5. Política / `PolicyNetwork`
-
-### 5.2. Salida de acciones como cos/sin sin normalización
-
-```python
-self.action_mean = ... nn.Tanh()  # en [-1, 1]
-self.action_std = ... nn.Softplus()
-...
-dist = Normal(mean, std)
-action = dist.sample()
-...
-# luego
-angles = actions_to_angles(actions)
-# que hace:
-angle = atan2(sin_components, cos_components)
-```
-
-No impones que `cos^2 + sin^2 = 1`. Pero `atan2` solo usa la dirección del vector `(cos, sin)`, no su módulo; así que aunque las muestras se salgan de la circunferencia unitaria, el ángulo sigue siendo consistente. No es un error, pero:
-
-* El modelo “pierde” una parte de la capacidad: podría mandar vectores enormes que se proyectan a un mismo ángulo.
-* Un truco habitual es forzar la normalización:
-
-  ```python
-  vec = torch.stack([cos, sin], dim=-1)
-  vec = vec / (vec.norm(dim=-1, keepdim=True) + 1e-6)
-  ```
-
-  antes de pasarlo a `atan2`, o bien parametrizar el ángulo directamente y luego tomar cos/sin para el control.
 
 ### 5.3. Desviación estándar
 
@@ -104,9 +58,6 @@ Si tuviera que priorizar cambios para mejorar estabilidad/desempeño:
 
    * Opcional: limitar también `std` por arriba.
 
-5. **Observaciones**
-
-   * Añadir velocidades de juntas y/o efector al vector de observación, ya que las usas en la reward.
 
 Con estos ajustes el esquema seguiría siendo el mismo (PPO sencillo con red algo grande), pero con comportamientos más estándar y previsibles, y probablemente mejor desempeño.
 
