@@ -1,21 +1,5 @@
 ## 2. PPOAgent: puntos no estándar o problemáticos
 
-### 2.2. No hay bootstrap con el valor final
-
-Actualmente siempre arrancas con `next_return = torch.zeros(B)` y nunca incorporas el valor del último estado. Para tareas continuas o episodios truncados, lo normal es algo tipo:
-
-```python
-# last_values: valor del último estado (T, B)
-next_return = last_values
-for t in reversed(range(T)):
-    done_mask = 1.0 - dones[t].float()
-    next_return = rewards[t] + self.gamma * next_return * done_mask
-    returns[t] = next_return
-```
-
-En tu código ni pasas `dones` en el rollout, ni usas `value` de la última observación para bootstrap. Eso introduce un sesgo fuerte cerca del final del horizonte artificial del rollout.
-
-
 ### 2.4. Entropía objetivo que no actúa realmente como “target entropy”
 
 ```python
@@ -110,33 +94,6 @@ reward_dict['gripper_height_reward'] = -0.004 * (1.0 / safe_denom).clamp(max=alg
 
 o directamente una penalización lineal o cuadrática suave respecto a un suelo deseado.
 
-### 4.3. `gripper_angular_velocity` con `get_ang()`
-
-```python
-gripper_angular_velocity = torch.as_tensor(self.robot.get_link(self.gripper_link_name).get_ang(), device=self.device)
-gripper_angular_velocity = torch.linalg.vector_norm(gripper_angular_velocity, dim=-1)
-```
-
-Aquí hay que revisar la API de Genesis:
-
-* Si `get_ang()` devuelve orientación (ángulos de Euler / cuaternión codificado), no estás midiendo velocidad angular, sino posición angular.
-* Si la función de verdad es “angular velocity”, entonces el nombre es confuso pero el cálculo tiene sentido.
-
-Merece la pena comprobar en la doc de Genesis si existe algo como `get_angvel()` o similar. Si no es la velocidad, estás penalizando simplemente “orientaciones grandes”, no giros rápidos.
-
-### 4.4. Magnitudes de las recompensas
-
-Tienes varios términos:
-
-* `distance_reward = -distance` (orden ~[-1, 0]).
-* Penalización de contacto (`-0.02 * contact_force_sum`, `-0.08 * links_contact_force`).
-* Penalizaciones de velocidad, velocidad angular, velocidad de junta al cuadrado, etc.
-* Recompensas de altura de antebrazo y (presuntamente) penalización de altura baja del gripper.
-
-Conviene mirar típicos valores en logs y comprobar que:
-
-* Ningún término está 2–3 órdenes de magnitud por encima de los demás (`gripper_height_reward` cerca de -4000 lo está).
-* Las escalas son razonables: por ejemplo, el objetivo principal (distancia) no debe quedar totalmente eclipsado por una regularización rara.
 
 ### 4.5. Eficiencia
 
@@ -152,16 +109,6 @@ Cada una probablemente implica un salto a C++/CUDA. No está “mal”, pero si 
 ---
 
 ## 5. Política / `PolicyNetwork`
-
-### 5.1. Arquitectura
-
-* Uso de un transformer encoder sobre tokens aprendidos derivados de la observación: para un brazo 6 DOF quizá sea “overkill”, pero desde el punto de vista de código está bien estructurado.
-* Proyección `obs → tokens` a un espacio de dimensión `num_tokens * token_dim` y luego reshape a `[B, num_tokens, token_dim]` → correcto.
-
-Cosas a tener en cuenta:
-
-* Capacidad bastante alta (16 tokens × 128 dim × 4 capas, etc.) con LR ≈ 2e-5: puede aprender, pero le puede costar mucho si la señal de recompensa es débil.
-* No hay normalización explícita de inputs (más allá de cos/sin y rangos de posiciones). Si algún feature crece mucho en escala, Laplace.
 
 ### 5.2. Salida de acciones como cos/sin sin normalización
 
@@ -207,24 +154,6 @@ para evitar acciones extremadamente ruidosas durante demasiado tiempo.
 
 ## 6. Script de entrenamiento / organización
 
-### 6.1. `Environment` aparece dos veces
-
-En el texto que has pegado hay dos definiciones idénticas de `Environment` y `actions_to_angles`. En el repo real igual no, pero merece la pena revisar que solo haya una definición y que `train.py` importe esa única versión.
-
-### 6.2. `load_latest_model`
-
-```python
-if load_latest_model:
-    checkpoint_path = get_latest_model(log_dir, training_run_name)
-    if checkpoint_path is None:
-        gs.logger.info("No previous checkpoint found; starting from scratch")
-```
-
-Dependiendo de cómo esté implementado `get_latest_model`, pasarle `training_run_name` (que acabas de crear nuevo) puede hacer que nunca encuentre nada. Si quieres realmente “último modelo global”, suele ser más fácil:
-
-* Buscar en `log_dir` sin filtrar por `training_run_name`, elegir el más reciente.
-* O bien pasar un nombre fijo de experimento, no uno basado en la fecha actual.
-
 ### 6.3. Reproducibilidad
 
 No veo seeds:
@@ -246,13 +175,10 @@ Si tuviera que priorizar cambios para mejorar estabilidad/desempeño:
 
 1. **Retornos y valor**
 
-   * Quitar la normalización rara de `compute_returns` (dividir por `weight_sum`).
-   * O bien dejar los returns sin normalizar y seguir normalizando solo las ventajas.
    * Añadir, a medio plazo, bootstrap con el valor del último estado (y eventualmente GAE).
 
 2. **Temporalidad**
 
-   * Probar `inference_every_n_steps = 1` (acción cada step) y ver cómo cambia el aprendizaje.
    * Si se mantiene el bloque de 10 steps, ajustar gamma y ser consciente de que el “step” del agente es el bloque.
 
 3. **Recompensas**
@@ -262,7 +188,6 @@ Si tuviera que priorizar cambios para mejorar estabilidad/desempeño:
 
 4. **Estabilidad de PPO**
 
-   * Añadir clipping de gradiente.
    * Opcional: limitar también `std` por arriba.
    * Simplificar el término de entropía a `entropy_loss = -entropy.mean()` si no quieres target entropy real.
 
