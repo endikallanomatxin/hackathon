@@ -1,7 +1,7 @@
 import os
-import shutil
 import genesis as gs
 from torch.utils.tensorboard import SummaryWriter
+from tensorboard.backend.event_processing import event_accumulator
 
 def get_latest_model(log_dir,
                      run_name:str|None=None):
@@ -49,33 +49,13 @@ def get_latest_model(log_dir,
         gs.logger.info("No model found. Using random initialization")
         return None
 
-    # If we are here, we have a model
-    # Copy existing TensorBoard events so the new run continues the curve
-    if run_name is not None:
-        prev_run_dir = os.path.join(log_dir, latest_run)
-        new_run_dir = os.path.join(log_dir, run_name)
-        if os.path.isdir(new_run_dir):
-            tb_files = [
-                f for f in os.listdir(prev_run_dir)
-                if f.startswith("events.out.tfevents")
-            ]
-            for filename in tb_files:
-                src = os.path.join(prev_run_dir, filename)
-                dst = os.path.join(new_run_dir, filename)
-                if os.path.exists(dst):
-                    continue
-                try:
-                    shutil.copy2(src, dst)
-                    gs.logger.info(f"Copied TensorBoard log {filename} to new run directory")
-                except OSError as exc:
-                    gs.logger.warning(f"Failed to copy TensorBoard log {filename}: {exc}")
-
-    # TODO: Put hyperparameters in another file
-    #       And also copy it between runs
-
-    # Loading the latest model
+    checkpoint_step = int(latest_checkpoint)
     gs.logger.info(f"Loading model from checkpoint {latest_checkpoint} of run {latest_run}")
-    return model_path
+    return {
+        'model_path': model_path,
+        'checkpoint_step': checkpoint_step,
+        'previous_run_dir': os.path.join(log_dir, latest_run),
+    }
 
 def show_reward_info(mean_reward, loss, learning_rate, reward_dict):
     gs.logger.info(f"REWARD {mean_reward:.6g},\tLOSS {loss:.6g},\tLR {learning_rate:.6g}")
@@ -97,18 +77,60 @@ class TensorboardLogger:
     """
     Thin wrapper around SummaryWriter so training can stream metrics to TensorBoard.
     """
-    def __init__(self, log_dir, run_name: str):
+    def __init__(self, log_dir, run_name: str, global_step_offset: int = 0):
         base_dir = os.fspath(log_dir)
         run_dir = os.path.join(base_dir, run_name)
         os.makedirs(run_dir, exist_ok=True)
         self.writer = SummaryWriter(log_dir=run_dir)
+        self.global_step_offset = global_step_offset
 
     def log_update(self, step: int, mean_reward: float, loss: float, learning_rate: float, reward_dict: dict[str, float]):
-        self.writer.add_scalar('train/mean_reward', mean_reward, step)
-        self.writer.add_scalar('train/loss', loss, step)
-        self.writer.add_scalar('train/learning_rate', learning_rate, step)
+        global_step = step + self.global_step_offset
+        self.writer.add_scalar('train/mean_reward', mean_reward, global_step)
+        self.writer.add_scalar('train/loss', loss, global_step)
+        self.writer.add_scalar('train/learning_rate', learning_rate, global_step)
         for key, value in reward_dict.items():
-            self.writer.add_scalar(f'rewards/{key}', value, step)
+            self.writer.add_scalar(f'rewards/{key}', value, global_step)
 
     def close(self):
         self.writer.close()
+
+
+def seed_tensorboard_history(previous_run_dir: str, new_run_dir: str, max_step: int):
+    """
+    Copy existing TensorBoard scalars from a previous run into the new run directory,
+    but only up to the specified max_step so resumed training reflects the checkpoint.
+    """
+    if max_step is None or max_step < 0:
+        return
+    if not os.path.isdir(previous_run_dir):
+        gs.logger.warning(f"Cannot seed TensorBoard history: {previous_run_dir} not found")
+        return
+    event_files = [
+        f for f in os.listdir(previous_run_dir)
+        if f.startswith("events.out.tfevents")
+    ]
+    if not event_files:
+        gs.logger.info(f"No TensorBoard event files found in {previous_run_dir}; skipping history copy")
+        return
+    accumulator = event_accumulator.EventAccumulator(previous_run_dir, size_guidance={
+        event_accumulator.SCALARS: 0,
+    })
+    try:
+        accumulator.Reload()
+    except Exception as exc:
+        gs.logger.warning(f"Failed to read TensorBoard data from {previous_run_dir}: {exc}")
+        return
+    scalar_tags = accumulator.Tags().get('scalars', [])
+    if not scalar_tags:
+        gs.logger.info(f"No scalar tags found in {previous_run_dir}; skipping history copy")
+        return
+    writer = SummaryWriter(log_dir=new_run_dir)
+    try:
+        for tag in scalar_tags:
+            for event in accumulator.Scalars(tag):
+                if event.step <= max_step:
+                    writer.add_scalar(tag, event.value, event.step)
+        writer.flush()
+    finally:
+        writer.close()

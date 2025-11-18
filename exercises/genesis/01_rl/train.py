@@ -7,7 +7,7 @@ import genesis as gs
 
 from env import Environment
 from agent import PPOAgent
-from log import get_latest_model, show_reward_info, TensorboardLogger
+from log import get_latest_model, show_reward_info, TensorboardLogger, seed_tensorboard_history
 
 def train(batch_size=64,
           max_steps=120,
@@ -20,7 +20,9 @@ def train(batch_size=64,
     log_dir = pathlib.Path(__file__).parent / 'logs'
     os.makedirs(log_dir, exist_ok=True)
     training_run_name = time.strftime("%Y-%m-%d-%H-%M-%S")
-    os.makedirs(os.path.join(log_dir, training_run_name))
+    run_dir_path = log_dir / training_run_name
+    run_dir_path.mkdir()
+    run_dir = os.fspath(run_dir_path)
 
     env = Environment(device=device,
                       batch_size=batch_size,
@@ -29,11 +31,14 @@ def train(batch_size=64,
                       record=record)
     obs_dim = env.obs_dim
     act_dim = env.act_dim
+    resume_info = None
     checkpoint_path = None
     if load_latest_model:
-        checkpoint_path = get_latest_model(log_dir, training_run_name)
-        if checkpoint_path is None:
+        resume_info = get_latest_model(log_dir, training_run_name)
+        if resume_info is None:
             gs.logger.info("No previous checkpoint found; starting from scratch")
+        else:
+            checkpoint_path = resume_info['model_path']
 
     agent = PPOAgent(
         device,
@@ -42,8 +47,16 @@ def train(batch_size=64,
         from_checkpoint=checkpoint_path,
     )
 
-    os.makedirs(os.path.join(log_dir, training_run_name, 'checkpoints'))
-    tb_logger = TensorboardLogger(log_dir, training_run_name)
+    os.makedirs(os.path.join(run_dir, 'checkpoints'))
+    if resume_info is not None:
+        seed_tensorboard_history(
+            resume_info['previous_run_dir'],
+            run_dir,
+            resume_info['checkpoint_step'],
+        )
+        tb_logger = TensorboardLogger(log_dir, training_run_name, global_step_offset=resume_info['checkpoint_step'] + 1)
+    else:
+        tb_logger = TensorboardLogger(log_dir, training_run_name)
 
     inference_every_n_steps = 4
     checkpoint_every_n_updates = 100
@@ -116,7 +129,7 @@ def train(batch_size=64,
 
             if checkpoint:
                 # Create new checkpoints folder
-                checkpoint_dir = os.path.join(log_dir, training_run_name, 'checkpoints', f'{update:08d}')
+                checkpoint_dir = os.path.join(run_dir, 'checkpoints', f'{update:08d}')
                 os.makedirs(checkpoint_dir)
                 # Save the video if recording
                 if record:
