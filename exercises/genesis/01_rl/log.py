@@ -24,6 +24,14 @@ def show_reward_info(mean_reward, loss, learning_rate, reward_dict):
 class TensorboardLogger:
     """
     Thin wrapper around SummaryWriter so training can stream metrics to TensorBoard.
+
+    To see the logs run (with the environment activated):
+
+    ```sh
+    tensorboard --logdir exercises/genesis/01_rl/logs
+    ```
+
+    (Use the flag --bind_all to make it accessible from other machines)
     """
     def __init__(self, log_dir, run_name: str, global_step_offset: int = 0):
         base_dir = os.fspath(log_dir)
