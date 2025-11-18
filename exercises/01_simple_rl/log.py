@@ -47,6 +47,18 @@ class TensorboardLogger:
         self.writer.add_scalar('train/learning_rate', learning_rate, global_step)
         for key, value in reward_dict.items():
             self.writer.add_scalar(f'rewards/{key}', value, global_step)
+        reward_tags = sorted(
+            f'rewards/{key}'
+            for key in reward_dict
+            if key.endswith('reward')
+        )
+        if reward_tags:
+            layout = {
+                "Rewards": {
+                    "Contributions": ["Multiline", reward_tags]
+                }
+            }
+            self.writer.add_custom_scalars(layout)
 
     def close(self):
         self.writer.close()
