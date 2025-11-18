@@ -20,7 +20,7 @@ class Environment:
         self.debug_env_count = min(4, batch_size)
         self.env_colors = self._generate_pair_colors(self.debug_env_count)
 
-        repo_root = Path(__file__).resolve().parents[2]
+        repo_root = Path(__file__).resolve().parents[1]
         robot_path = repo_root / "assets" / "SO101" / "so101_new_calib.xml"
 
         gs.init(backend=gs.gs_backend.gpu, performance_mode=True)

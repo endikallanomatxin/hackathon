@@ -28,7 +28,7 @@ class TensorboardLogger:
     To see the logs run (with the environment activated):
 
     ```sh
-    tensorboard --logdir exercises/genesis/01_rl/logs
+    tensorboard --logdir exercises/01_simple_rl/logs
     ```
 
     (Use the flag --bind_all to make it accessible from other machines)
