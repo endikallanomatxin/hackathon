@@ -1,64 +1,12 @@
 import os
-import genesis as gs
+from pathlib import Path
+
 from torch.utils.tensorboard import SummaryWriter
 from tensorboard.backend.event_processing import event_accumulator
 
-def get_latest_model(log_dir,
-                     run_name:str|None=None):
-
-    # Check if there are any runs in the log directory
-    entries = os.listdir(log_dir)
-    if len(entries) == 0:
-        gs.logger.info("No runs found. Using random initialization")
-        return None
-
-    # Keep only directories (each directory represents a run) and sort by mtime/name
-    run_dirs = []
-    for entry in entries:
-        if entry == run_name:
-            continue
-        full_path = os.path.join(log_dir, entry)
-        if os.path.isdir(full_path):
-            run_dirs.append((os.path.getmtime(full_path), entry))
-
-    if len(run_dirs) == 0:
-        gs.logger.info("No previous run directories found. Using random initialization")
-        return None
-
-    run_dirs.sort(key=lambda x: (x[0], x[1]))
-    latest_run = run_dirs[-1][1]
-    gs.logger.info(f"Latest run is: {latest_run}")
-
-    # Look for checkpoints folder
-    checkpoints_dir = os.path.join(log_dir, latest_run, 'checkpoints')
-    if not os.path.exists(checkpoints_dir):
-        gs.logger.info("No checkpoints folder found. Using random initialization")
-        return None
-
-    # Get the latest checkpoint
-    checkpoints = [f for f in os.listdir(checkpoints_dir) if os.path.isdir(os.path.join(checkpoints_dir, f))]
-    if len(checkpoints) == 0:
-        gs.logger.info("No checkpoints found. Using random initialization")
-        return None
-    checkpoints.sort()
-    latest_checkpoint = checkpoints[-1]
-
-    #Check for the model
-    model_path = os.path.join(checkpoints_dir, latest_checkpoint, 'policy-model.pth')
-    if not os.path.exists(model_path):
-        gs.logger.info("No model found. Using random initialization")
-        return None
-
-    checkpoint_step = int(latest_checkpoint)
-    gs.logger.info(f"Loading model from checkpoint {latest_checkpoint} of run {latest_run}")
-    return {
-        'model_path': model_path,
-        'checkpoint_step': checkpoint_step,
-        'previous_run_dir': os.path.join(log_dir, latest_run),
-    }
-
 def show_reward_info(mean_reward, loss, learning_rate, reward_dict):
-    gs.logger.info(f"REWARD {mean_reward:.6g},\tLOSS {loss:.6g},\tLR {learning_rate:.6g}")
+    print("\n")
+    print(f"REWARD {mean_reward:.6g},\tLOSS {loss:.6g},\tLR {learning_rate:.6g}")
     keys = list(reward_dict.keys())
     max_odd_key_len = max(len(key) for key in keys[0::2])
     max_even_key_len = max(len(key) for key in keys[1::2])
@@ -70,7 +18,7 @@ def show_reward_info(mean_reward, loss, learning_rate, reward_dict):
             key2 = keys[i+1]
             val2 = reward_dict[key2]
             line += f"\t\t{key2:<{max_even_key_len+1}}: {val2:>12.6g}"
-        gs.logger.info(line)
+        print(line)
 
 
 class TensorboardLogger:
@@ -96,41 +44,91 @@ class TensorboardLogger:
         self.writer.close()
 
 
-def seed_tensorboard_history(previous_run_dir: str, new_run_dir: str, max_step: int):
+class TrainingRunManager:
     """
-    Copy existing TensorBoard scalars from a previous run into the new run directory,
-    but only up to the specified max_step so resumed training reflects the checkpoint.
+    Handles run directory creation, checkpoint discovery, TensorBoard seeding,
+    and logger instantiation so training scripts stay tidy.
     """
-    if max_step is None or max_step < 0:
-        return
-    if not os.path.isdir(previous_run_dir):
-        gs.logger.warning(f"Cannot seed TensorBoard history: {previous_run_dir} not found")
-        return
-    event_files = [
-        f for f in os.listdir(previous_run_dir)
-        if f.startswith("events.out.tfevents")
-    ]
-    if not event_files:
-        gs.logger.info(f"No TensorBoard event files found in {previous_run_dir}; skipping history copy")
-        return
-    accumulator = event_accumulator.EventAccumulator(previous_run_dir, size_guidance={
-        event_accumulator.SCALARS: 0,
-    })
-    try:
-        accumulator.Reload()
-    except Exception as exc:
-        gs.logger.warning(f"Failed to read TensorBoard data from {previous_run_dir}: {exc}")
-        return
-    scalar_tags = accumulator.Tags().get('scalars', [])
-    if not scalar_tags:
-        gs.logger.info(f"No scalar tags found in {previous_run_dir}; skipping history copy")
-        return
-    writer = SummaryWriter(log_dir=new_run_dir)
-    try:
-        for tag in scalar_tags:
-            for event in accumulator.Scalars(tag):
-                if event.step <= max_step:
-                    writer.add_scalar(tag, event.value, event.step)
-        writer.flush()
-    finally:
-        writer.close()
+    def __init__(self, log_dir):
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+    def prepare_run(self, run_name: str, resume_latest: bool):
+        run_dir = self.log_dir / run_name
+        run_dir.mkdir()
+
+        resume_info = self._find_latest_run(exclude_run_name=run_name) if resume_latest else None
+        checkpoint_path = resume_info['model_path'] if resume_info else None
+
+        if resume_info is not None:
+            self._seed_tensorboard_history(
+                resume_info['run_dir'],
+                run_dir,
+                resume_info['checkpoint_step'],
+            )
+            offset = resume_info['checkpoint_step'] + 1
+        else:
+            offset = 0
+
+        logger = TensorboardLogger(self.log_dir, run_name, global_step_offset=offset)
+        return os.fspath(run_dir), checkpoint_path, logger
+
+    def _find_latest_run(self, exclude_run_name: str | None):
+        run_dirs = [
+            entry for entry in self.log_dir.iterdir()
+            if entry.is_dir() and entry.name != exclude_run_name
+        ]
+        if not run_dirs:
+            print("No previous run directories found. Using random initialization")
+            return None
+        run_dirs.sort(key=lambda entry: (entry.stat().st_mtime, entry.name))
+        latest_run_dir = run_dirs[-1]
+        checkpoints_dir = latest_run_dir / 'checkpoints'
+        if not checkpoints_dir.exists():
+            print("No checkpoints folder found. Using random initialization")
+            return None
+        checkpoint_dirs = sorted([p for p in checkpoints_dir.iterdir() if p.is_dir()])
+        if not checkpoint_dirs:
+            print("No checkpoints found. Using random initialization")
+            return None
+        latest_checkpoint = checkpoint_dirs[-1]
+        model_path = latest_checkpoint / 'policy-model.pth'
+        if not model_path.exists():
+            print("No model found. Using random initialization")
+            return None
+        checkpoint_step = int(latest_checkpoint.name)
+        print(f"Loading model from checkpoint {latest_checkpoint.name} of run {latest_run_dir.name}")
+        return {
+            'model_path': os.fspath(model_path),
+            'checkpoint_step': checkpoint_step,
+            'run_dir': os.fspath(latest_run_dir),
+        }
+
+    def _seed_tensorboard_history(self, previous_run_dir: str, new_run_dir: Path, max_step: int):
+        if max_step < 0:
+            return
+        prev_path = Path(previous_run_dir)
+        if not prev_path.is_dir():
+            print(f"WARNING: Cannot seed TensorBoard history: {previous_run_dir} not found")
+            return
+        accumulator = event_accumulator.EventAccumulator(str(prev_path), size_guidance={
+            event_accumulator.SCALARS: 0,
+        })
+        try:
+            accumulator.Reload()
+        except Exception as exc:
+            print(f"WARNING: Failed to read TensorBoard data from {previous_run_dir}: {exc}")
+            return
+        scalar_tags = accumulator.Tags().get('scalars', [])
+        if not scalar_tags:
+            print(f"No scalar tags found in {previous_run_dir}; skipping history copy")
+            return
+        writer = SummaryWriter(log_dir=str(new_run_dir))
+        try:
+            for tag in scalar_tags:
+                for event in accumulator.Scalars(tag):
+                    if event.step <= max_step:
+                        writer.add_scalar(tag, event.value, event.step)
+            writer.flush()
+        finally:
+            writer.close()

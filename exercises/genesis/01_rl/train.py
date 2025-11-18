@@ -7,7 +7,10 @@ import genesis as gs
 
 from env import Environment
 from agent import PPOAgent
-from log import get_latest_model, show_reward_info, TensorboardLogger, seed_tensorboard_history
+from log import (
+    show_reward_info,
+    TrainingRunManager,
+)
 
 def train(batch_size=64,
           max_steps=120,
@@ -18,11 +21,12 @@ def train(batch_size=64,
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     log_dir = pathlib.Path(__file__).parent / 'logs'
-    os.makedirs(log_dir, exist_ok=True)
+    manager = TrainingRunManager(log_dir)
     training_run_name = time.strftime("%Y-%m-%d-%H-%M-%S")
-    run_dir_path = log_dir / training_run_name
-    run_dir_path.mkdir()
-    run_dir = os.fspath(run_dir_path)
+    run_dir, checkpoint_path, tb_logger = manager.prepare_run(
+        training_run_name,
+        resume_latest=load_latest_model
+    )
 
     env = Environment(device=device,
                       batch_size=batch_size,
@@ -31,14 +35,6 @@ def train(batch_size=64,
                       record=record)
     obs_dim = env.obs_dim
     act_dim = env.act_dim
-    resume_info = None
-    checkpoint_path = None
-    if load_latest_model:
-        resume_info = get_latest_model(log_dir, training_run_name)
-        if resume_info is None:
-            gs.logger.info("No previous checkpoint found; starting from scratch")
-        else:
-            checkpoint_path = resume_info['model_path']
 
     agent = PPOAgent(
         device,
@@ -48,15 +44,6 @@ def train(batch_size=64,
     )
 
     os.makedirs(os.path.join(run_dir, 'checkpoints'))
-    if resume_info is not None:
-        seed_tensorboard_history(
-            resume_info['previous_run_dir'],
-            run_dir,
-            resume_info['checkpoint_step'],
-        )
-        tb_logger = TensorboardLogger(log_dir, training_run_name, global_step_offset=resume_info['checkpoint_step'] + 1)
-    else:
-        tb_logger = TensorboardLogger(log_dir, training_run_name)
 
     inference_every_n_steps = 4
     checkpoint_every_n_updates = 100
