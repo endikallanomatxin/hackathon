@@ -1,7 +1,7 @@
 import os
-import pandas as pd
-import matplotlib.pyplot as plt
+import shutil
 import genesis as gs
+from torch.utils.tensorboard import SummaryWriter
 
 def get_latest_model(log_dir,
                      run_name:str|None=None):
@@ -50,20 +50,25 @@ def get_latest_model(log_dir,
         return None
 
     # If we are here, we have a model
-    # Now copy the log.txt of the latest run to the new run
+    # Copy existing TensorBoard events so the new run continues the curve
     if run_name is not None:
-        log_file = os.path.join(log_dir, latest_run, 'log.txt')
-        new_log_file = os.path.join(log_dir, run_name, 'log.txt')
-        if not os.path.exists(new_log_file):
-            if os.path.exists(log_file):
-                gs.logger.info(f"Copying log file from {log_file} to {new_log_file}")
-                with open(log_file, 'r') as f:
-                    with open(new_log_file, 'w') as g:
-                        g.write(f.read())
-            else:
-                gs.logger.warning(f"Expected log file {log_file} not found; skipping copy")
-        else:
-            gs.logger.info(f"Log file {new_log_file} already exists")
+        prev_run_dir = os.path.join(log_dir, latest_run)
+        new_run_dir = os.path.join(log_dir, run_name)
+        if os.path.isdir(new_run_dir):
+            tb_files = [
+                f for f in os.listdir(prev_run_dir)
+                if f.startswith("events.out.tfevents")
+            ]
+            for filename in tb_files:
+                src = os.path.join(prev_run_dir, filename)
+                dst = os.path.join(new_run_dir, filename)
+                if os.path.exists(dst):
+                    continue
+                try:
+                    shutil.copy2(src, dst)
+                    gs.logger.info(f"Copied TensorBoard log {filename} to new run directory")
+                except OSError as exc:
+                    gs.logger.warning(f"Failed to copy TensorBoard log {filename}: {exc}")
 
     # TODO: Put hyperparameters in another file
     #       And also copy it between runs
@@ -74,7 +79,6 @@ def get_latest_model(log_dir,
 
 def show_reward_info(mean_reward, loss, learning_rate, reward_dict):
     gs.logger.info(f"REWARD {mean_reward:.6g},\tLOSS {loss:.6g},\tLR {learning_rate:.6g}")
-    # Log by pairs of keys
     keys = list(reward_dict.keys())
     max_odd_key_len = max(len(key) for key in keys[0::2])
     max_even_key_len = max(len(key) for key in keys[1::2])
@@ -82,141 +86,29 @@ def show_reward_info(mean_reward, loss, learning_rate, reward_dict):
         key1 = keys[i]
         val1 = reward_dict[key1]
         line = f"{key1:<{max_odd_key_len+1}}: {val1:>12.6g}"
-        key2 = keys[i+1]
-        val2 = reward_dict[key2]
-        line += f"\t\t{key2:<{max_even_key_len+1}}: {val2:>12.6g}"
+        if i + 1 < len(keys):
+            key2 = keys[i+1]
+            val2 = reward_dict[key2]
+            line += f"\t\t{key2:<{max_even_key_len+1}}: {val2:>12.6g}"
         gs.logger.info(line)
 
-def log_update(log_dir, training_run_name, update, mean_reward, loss, learning_rate, reward_dict_mean):
-    log_path = os.path.join(log_dir, training_run_name, 'log.txt')
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
 
-    if not os.path.exists(log_path):
-        open(log_path, 'w').close()
+class TensorboardLogger:
+    """
+    Thin wrapper around SummaryWriter so training can stream metrics to TensorBoard.
+    """
+    def __init__(self, log_dir, run_name: str):
+        base_dir = os.fspath(log_dir)
+        run_dir = os.path.join(base_dir, run_name)
+        os.makedirs(run_dir, exist_ok=True)
+        self.writer = SummaryWriter(log_dir=run_dir)
 
-    file_empty = os.path.getsize(log_path) == 0
+    def log_update(self, step: int, mean_reward: float, loss: float, learning_rate: float, reward_dict: dict[str, float]):
+        self.writer.add_scalar('train/mean_reward', mean_reward, step)
+        self.writer.add_scalar('train/loss', loss, step)
+        self.writer.add_scalar('train/learning_rate', learning_rate, step)
+        for key, value in reward_dict.items():
+            self.writer.add_scalar(f'rewards/{key}', value, step)
 
-    if not file_empty:
-        with open(log_path, 'r') as existing_file:
-            header_line = existing_file.readline().strip()
-        header_columns = [col.strip() for col in header_line.split(',') if col.strip()]
-        if 'Learning rate' not in header_columns:
-            with open(log_path, 'r') as existing_file:
-                lines = existing_file.readlines()
-            with open(log_path, 'w') as updated_file:
-                for idx, line in enumerate(lines):
-                    line = line.rstrip('\n')
-                    suffix = ',Learning rate' if idx == 0 else ',NaN'
-                    updated_file.write(f"{line}{suffix}\n")
-            file_empty = False
-
-    with open(log_path, 'a') as f:
-        if file_empty:
-            f.write("Training run name,Update,Mean reward,Loss,Learning rate")
-            for key in reward_dict_mean:
-                f.write(f",{key}")
-            f.write("\n")
-            file_empty = False
-
-        f.write(f"{training_run_name},{update},{mean_reward},{loss},{learning_rate}")
-        for key in reward_dict_mean:
-            f.write(f",{reward_dict_mean[key]}")
-        f.write("\n")
-
-
-def log_plot(log_dir, run_name):
-    log_file = os.path.join(log_dir, run_name, 'log.txt')
-    if not os.path.exists(log_file):
-        gs.logger.warning(f"Error creating log plot: {log_file} not found")
-        return
-
-    df = pd.read_csv(log_file, header=0)
-    updates = df['Update']
-    rewards = df['Mean reward']
-    losses = df['Loss']
-    learning_rate = df['Learning rate'] if 'Learning rate' in df.columns else None
-
-    # Get the rest of the columns, whatever they are.
-    rest_of_columns = [column for column in df.columns if not column in ['Training run name', 'Update', 'Mean reward', 'Loss', 'Learning rate']]
-    reward_metric_columns = [column for column in rest_of_columns if not 'reward' in column.lower()]
-    reward_component_columns = [column for column in rest_of_columns if 'reward' in column.lower()]
-
-    fig, (ax1, ax2, ax3) = plt.subplots(nrows=3, ncols=1, figsize=(10, 14))
-    fig.subplots_adjust(
-        left=0.05,
-        right=0.95,
-        top=0.95,
-        bottom=0.05,
-        hspace=0.4
-    )
-
-    # Subplot 1: Reward and loss
-    ax1.set_title("Reward and Loss")
-    color = 'green'
-    ax1.set_ylabel("Mean Reward", color=color)
-    ax1.plot(updates, rewards, color=color, label="Mean Reward")
-    ax1.tick_params(axis='y', labelcolor=color)
-    ax1.grid(True)
-
-    ax1_twin = ax1.twinx()
-    color = 'red'
-    ax1_twin.set_ylabel("Loss", color=color)
-    ax1_twin.plot(updates, losses, color=color, label="Loss")
-    ax1_twin.tick_params(axis='y', labelcolor=color)
-    ax1_twin.grid(True)
-
-    if learning_rate is not None:
-        ax1_lr = ax1.twinx()
-        ax1_lr.spines.right.set_position(("axes", 1.1))
-        color = 'tab:blue'
-        ax1_lr.set_ylabel("Learning Rate", color=color)
-        ax1_lr.plot(updates, learning_rate, color=color, linestyle='--', label="Learning Rate")
-        ax1_lr.tick_params(axis='y', labelcolor=color)
-
-    # Subplot 2: Reward metrics
-    ax2.set_title("Reward Metrics")
-    ax2.set_xlabel("Update")
-    axes_list = [ax2]  # Lista de ejes que iremos añadiendo con twin
-    colors = ['cornflowerblue', 'coral', 'mediumseagreen', 'goldenrod', 'steelblue', 'sandybrown', 'slateblue', 'palevioletred', 'teal', 'orchid']
-    if len(reward_metric_columns) > 0:
-        # Graficamos la primera métrica en el eje principal
-        m0 = reward_metric_columns[0]
-        if m0 in df.columns:
-            axes_list[0].plot(updates, df[m0], color=colors[0], label=m0)
-            axes_list[0].set_ylabel(m0, color=colors[0])
-            axes_list[0].tick_params(axis='y', labelcolor=colors[0])
-        else:
-            gs.logger.warning(f"Column '{m0}' not found in CSV")
-
-        # Para las siguientes métricas, creamos un nuevo twin axis desplazado
-        for i in range(1, len(reward_metric_columns)):
-            metric = reward_metric_columns[i]
-            if metric not in df.columns:
-                gs.logger.warning(f"Column '{metric}' not found in CSV")
-                continue
-
-            ax_new = axes_list[0].twinx()
-            # Desplaza el spine para que no se superpongan
-            ax_new.spines.right.set_position(("axes", 1.0 + 0.085 * (i-1)))
-
-            ax_new.plot(updates, df[metric], color=colors[i % len(colors)], label=metric)
-            ax_new.set_ylabel(metric, color=colors[i % len(colors)])
-            ax_new.tick_params(axis='y', labelcolor=colors[i % len(colors)])
-            axes_list.append(ax_new)
-
-    # -- Subplot 3: Contribuciones parciales a la recompensa (mismo eje Y). No twins --
-    ax3.set_title("Reward Contributions")
-    ax3.set_ylabel("Reward Component")
-    ax3.set_xlabel("Update")
-    for i, component in enumerate(reward_component_columns):
-        if component not in df.columns:
-            gs.logger.warning(f"Column '{component}' not found in CSV")
-            continue
-        ax3.plot(updates, df[component], color=colors[i % len(colors)], label=component)
-    ax3.grid(True)
-
-    plot_path = os.path.join(log_dir, run_name, 'log-plot.png')
-    plt.savefig(plot_path, bbox_inches='tight')
-    plt.close()
-
-    gs.logger.info(f"Log plot saved to {plot_path}")
+    def close(self):
+        self.writer.close()

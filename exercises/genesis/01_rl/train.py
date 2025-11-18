@@ -7,7 +7,7 @@ import genesis as gs
 
 from env import Environment
 from agent import PPOAgent
-from log import get_latest_model, log_plot, show_reward_info, log_update
+from log import get_latest_model, show_reward_info, TensorboardLogger
 
 def train(batch_size=64,
           max_steps=120,
@@ -43,90 +43,88 @@ def train(batch_size=64,
     )
 
     os.makedirs(os.path.join(log_dir, training_run_name, 'checkpoints'))
+    tb_logger = TensorboardLogger(log_dir, training_run_name)
 
     inference_every_n_steps = 4
     checkpoint_every_n_updates = 100
-    plot_every_n_updates = 1
 
-    for update in range(100_000):
-        print("\n")
-        gs.logger.info(f"UPDATE {update}")
-        # Initialize environments (no_grad, we don't want to backprop through env)
-        with torch.no_grad():
-            obs = env.reset()
-
-        obs_list = []
-        actions_list = []
-        log_probs_list = []
-        values_list = []
-        rewards_list = []
-        reward_dict_list = []
-
-        checkpoint = update % checkpoint_every_n_updates == 0
-        plot = update % plot_every_n_updates == 0
-
-        for inferece in range(max_steps // inference_every_n_steps):
+    try:
+        for update in range(100_000):
+            print("\n")
+            gs.logger.info(f"UPDATE {update}")
+            # Initialize environments (no_grad, we don't want to backprop through env)
             with torch.no_grad():
-                action, log_prob, value = agent.select_action_and_get_value(obs)
+                obs = env.reset()
 
-            obs_list.append(obs.clone().detach())            # shape [B, obs_dim]
-            actions_list.append(action.clone().detach())     # shape [B, act_dim]
-            log_probs_list.append(log_prob.clone().detach()) # shape [B]
-            values_list.append(value)                        # shape [B]
+            obs_list = []
+            actions_list = []
+            log_probs_list = []
+            values_list = []
+            rewards_list = []
+            reward_dict_list = []
 
-            reward_sum = torch.zeros(env.batch_size, device=obs.device)
-            reward_dict_sum = None
+            checkpoint = update % checkpoint_every_n_updates == 0
 
-            for step in range(inference_every_n_steps):
+            for inferece in range(max_steps // inference_every_n_steps):
                 with torch.no_grad():
-                    next_obs, reward, reward_dict = env.step(action, record=checkpoint)
-                reward_sum = reward_sum + reward
-                if reward_dict_sum is None:
-                    reward_dict_sum = {key: float(val) for key, val in reward_dict.items()}
-                else:
-                    for key in reward_dict_sum:
-                        reward_dict_sum[key] += float(reward_dict[key])
+                    action, log_prob, value = agent.select_action_and_get_value(obs)
 
-            reward_mean = reward_sum / inference_every_n_steps
-            rewards_list.append(reward_mean.clone().detach())  # shape [B]
-            reward_dict_list.append(
-                {key: reward_dict_sum[key] / inference_every_n_steps for key in reward_dict_sum}
-            )
+                obs_list.append(obs.clone().detach())            # shape [B, obs_dim]
+                actions_list.append(action.clone().detach())     # shape [B, act_dim]
+                log_probs_list.append(log_prob.clone().detach()) # shape [B]
+                values_list.append(value)                        # shape [B]
 
-            obs = next_obs
+                reward_sum = torch.zeros(env.batch_size, device=obs.device)
+                reward_dict_sum = None
 
-        # Stack them into [T, B, ...]
-        rollout = {
-            'obs':      torch.stack(obs_list, dim=0),      # [T, B, obs_dim]
-            'actions':  torch.stack(actions_list, dim=0),  # [T, B, act_dim]
-            'log_probs':torch.stack(log_probs_list, dim=0),# [T, B]
-            'values':   torch.stack(values_list, dim=0),   # [T, B]
-            'rewards':  torch.stack(rewards_list, dim=0),  # [T, B]
-        }
+                for step in range(inference_every_n_steps):
+                    with torch.no_grad():
+                        next_obs, reward, reward_dict = env.step(action, record=checkpoint)
+                    reward_sum = reward_sum + reward
+                    if reward_dict_sum is None:
+                        reward_dict_sum = {key: float(val) for key, val in reward_dict.items()}
+                    else:
+                        for key in reward_dict_sum:
+                            reward_dict_sum[key] += float(reward_dict[key])
 
-        loss, current_lr = agent.update(rollout)
-        mean_reward = rollout['rewards'].mean().item()
+                reward_mean = reward_sum / inference_every_n_steps
+                rewards_list.append(reward_mean.clone().detach())  # shape [B]
+                reward_dict_list.append(
+                    {key: reward_dict_sum[key] / inference_every_n_steps for key in reward_dict_sum}
+                )
 
-        reward_dict_mean = {}
-        for key in reward_dict_list[0]:
-            reward_dict_mean[key] = sum(reward_dict[key] for reward_dict in reward_dict_list) / len(reward_dict_list)
+                obs = next_obs
 
-        show_reward_info(mean_reward, loss, current_lr, reward_dict_mean)
-        log_update(log_dir, training_run_name, update, mean_reward, loss, current_lr, reward_dict_mean)
+            # Stack them into [T, B, ...]
+            rollout = {
+                'obs':      torch.stack(obs_list, dim=0),      # [T, B, obs_dim]
+                'actions':  torch.stack(actions_list, dim=0),  # [T, B, act_dim]
+                'log_probs':torch.stack(log_probs_list, dim=0),# [T, B]
+                'values':   torch.stack(values_list, dim=0),   # [T, B]
+                'rewards':  torch.stack(rewards_list, dim=0),  # [T, B]
+            }
 
-        if checkpoint:
-            # Create new checkpoints folder
-            checkpoint_dir = os.path.join(log_dir, training_run_name, 'checkpoints', f'{update:08d}')
-            os.makedirs(checkpoint_dir)
-            # Save the video if recording
-            if record:
-                env.save_video(os.path.join(checkpoint_dir, f"video.mp4"))
-            # Save the model
-            torch.save(agent.policy.state_dict(), os.path.join(checkpoint_dir, 'policy-model.pth'))
+            loss, current_lr = agent.update(rollout)
+            mean_reward = rollout['rewards'].mean().item()
 
-        if plot:
-            # Create or update the log plot
-            log_plot(log_dir, training_run_name)
+            reward_dict_mean = {}
+            for key in reward_dict_list[0]:
+                reward_dict_mean[key] = sum(reward_dict[key] for reward_dict in reward_dict_list) / len(reward_dict_list)
+
+            show_reward_info(mean_reward, loss, current_lr, reward_dict_mean)
+            tb_logger.log_update(update, mean_reward, loss, current_lr, reward_dict_mean)
+
+            if checkpoint:
+                # Create new checkpoints folder
+                checkpoint_dir = os.path.join(log_dir, training_run_name, 'checkpoints', f'{update:08d}')
+                os.makedirs(checkpoint_dir)
+                # Save the video if recording
+                if record:
+                    env.save_video(os.path.join(checkpoint_dir, f"video.mp4"))
+                # Save the model
+                torch.save(agent.policy.state_dict(), os.path.join(checkpoint_dir, 'policy-model.pth'))
+    finally:
+        tb_logger.close()
 
 
 if __name__ == "__main__":
