@@ -20,7 +20,7 @@ def train(
     show_viewer=False,
     record=False,
     load_latest_model=False,
-    total_updates=2000,
+    total_updates=4000,
 ):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
