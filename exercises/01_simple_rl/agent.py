@@ -6,6 +6,11 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from model import PolicyNetwork
 
 class PPOAgent:
+    """
+    Agent es un wrapper alrededor de la PolicyNetwork que implementa
+    el algoritmo PPO para actualizar los pesos de la red a partir
+    de rollouts recogidos en el entorno.
+    """
     def __init__(
          self,
          device:torch.device,
@@ -29,6 +34,8 @@ class PPOAgent:
         self.clip_epsilon = clip_epsilon
         self.gamma = gamma
         self.update_epochs = update_epochs
+        # CosineAnnealingLR nos da un ciclo descendente suave sin tener que actualizar
+        # manualmente el learning rate.
         self.scheduler = CosineAnnealingLR(
             self.optimizer,
             T_max=max(1, self.total_updates - 1),
@@ -78,6 +85,9 @@ class PPOAgent:
         return returns
 
     def update(self, rollout):
+        # update aplica los pasos de PPO para un “rollout” completo: primero prepara
+        # ventajas y retornos, después ejecuta varias épocas de optimización sobre
+        # los mismos datos.
         """
         rollout: diccionario con claves:
             'obs':      [T, B, obs_dim]
@@ -94,7 +104,7 @@ class PPOAgent:
         rewards = rollout['rewards']    # [T, B]
         dones = rollout.get('dones')    # opcional [T, B]
 
-        # Calcular retornos descontados para cada entorno
+        # Calcular retornos descontados para cada entorno (valor acumulado futuro).
         returns = self.compute_returns(rewards, dones=dones)  # [T, B]
 
         # Aplanar tensores de [T, B, ...] a [T*B, ...]
@@ -107,7 +117,7 @@ class PPOAgent:
         actions = torch.nan_to_num(actions, nan=0.0, posinf=1e4, neginf=-1e4)
         returns = torch.nan_to_num(returns, nan=0.0, posinf=1e4, neginf=-1e4)
 
-        # Calcular ventajas
+        # Las ventajas indican cuánto mejor resultó cada acción respecto al valor estimado.
         flat_values = torch.nan_to_num(values.view(-1), nan=0.0, posinf=1e4, neginf=-1e4)
         advantages = returns - flat_values
         advantages = advantages / (advantages.std() + 1e-8)
@@ -124,7 +134,7 @@ class PPOAgent:
         value_coef = 0.6     # Coeficiente para la pérdida del valor
         entropy_coef = 0.01  # Coeficiente para la bonificación de entropía
 
-        # Update learning rate for this PPO iteration using cosine decay.
+        # Antes de optimizar actualizamos el LR siguiendo el coseno para este update.
         epoch = min(self.completed_updates, self.total_updates - 1)
         self.scheduler.step(epoch)
         self.current_lr = self.scheduler.get_last_lr()[0]

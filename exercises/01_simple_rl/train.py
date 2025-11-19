@@ -28,11 +28,15 @@ def train(
     log_dir = pathlib.Path(__file__).parent / 'logs'
     manager = TrainingRunManager(log_dir)
     training_run_name = time.strftime("%Y-%m-%d-%H-%M-%S")
+    # TrainingRunManager centraliza todo lo referente a logs/checkpoints y también
+    # nos dice desde qué update debemos continuar si reanudamos entrenamiento.
     run_dir, checkpoint_path, tb_logger, start_update = manager.prepare_run(
         training_run_name,
         resume_latest=load_latest_model
     )
 
+    # Montamos el entorno vectorizado de Genesis: varias copias del brazo se ejecutan
+    # en paralelo para producir más datos por actualización.
     env = Environment(device=device,
                       batch_size=batch_size,
                       max_steps=max_steps,
@@ -62,10 +66,13 @@ def train(
             )
             return
 
+        # Bucle principal de entrenamiento: cada iteración genera un rollout completo
+        # y actualiza la política con todos esos datos.
         for update in range(start_update, total_updates):
             print("\n")
             gs.logger.info(f"UPDATE {update}")
-            # Initialize environments (no_grad, we don't want to backprop through env)
+            # Inicializamos las simulaciones; todo va dentro de no_grad() porque el
+            # entorno no forma parte del grafo de PyTorch.
             with torch.no_grad():
                 obs = env.reset()
 
@@ -78,6 +85,8 @@ def train(
 
             checkpoint = update % checkpoint_every_n_updates == 0
 
+            # Recolectamos “inference_every_n_steps” pasos de la política antes de
+            # volver a evaluarla; así reducimos llamadas a la red neuronal.
             for inferece in range(max_steps // inference_every_n_steps):
                 with torch.no_grad():
                     action, log_prob, value = agent.select_action_and_get_value(obs)
@@ -108,7 +117,7 @@ def train(
 
                 obs = next_obs
 
-            # Stack them into [T, B, ...]
+            # El agente espera tensores apilados de dimensión [Tiempo, Batch, ...].
             rollout = {
                 'obs':      torch.stack(obs_list, dim=0),      # [T, B, obs_dim]
                 'actions':  torch.stack(actions_list, dim=0),  # [T, B, act_dim]
@@ -124,6 +133,7 @@ def train(
             for key in reward_dict_list[0]:
                 reward_dict_mean[key] = sum(reward_dict[key] for reward_dict in reward_dict_list) / len(reward_dict_list)
 
+            # Mostramos en consola y TensorBoard el estado de aprendizaje.
             show_reward_info(mean_reward, loss, current_lr, reward_dict_mean)
             tb_logger.log_update(update, mean_reward, loss, current_lr, reward_dict_mean)
 
