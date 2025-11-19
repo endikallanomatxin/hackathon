@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.optim as optim
 import genesis as gs
@@ -5,24 +6,31 @@ import genesis as gs
 from model import PolicyNetwork
 
 class PPOAgent:
-    def __init__(self,
-                 device:torch.device,
-                 obs_dim,
-                 act_dim,
-                 lr=4e-5,
-                 lr_min=1e-5,
-                 lr_t0=100,
-                 clip_epsilon=0.2,
-                 gamma=0.99,
-                 update_epochs=16,
-                 from_checkpoint=None,
+    def __init__(
+         self,
+         device:torch.device,
+         obs_dim,
+         act_dim,
+         total_updates,
+         lr=1e-5,
+         lr_min=1e-7,
+         warmup_updates=20,
+         initial_update=0,
+         clip_epsilon=0.2,
+         gamma=0.99,
+         update_epochs=16,
+         from_checkpoint=None,
     ):
         self.device = device
         self.policy = PolicyNetwork(obs_dim, act_dim, from_checkpoint=from_checkpoint).to(self.device)
         param_count = sum(p.numel() for p in self.policy.parameters())
         gs.logger.info(f"PolicyNetwork has {param_count} parameters")
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=lr_t0, T_mult=2, eta_min=lr_min)
+        self.lr_max = lr
+        self.lr_min = lr_min
+        self.total_updates = max(1, total_updates)
+        self.warmup_updates = min(self.total_updates, max(0, warmup_updates))
+        self.completed_updates = max(0, min(initial_update, self.total_updates))
         self.current_lr = lr
         self.clip_epsilon = clip_epsilon
         self.gamma = gamma
@@ -115,6 +123,10 @@ class PPOAgent:
         value_coef = 0.6     # Coeficiente para la pérdida del valor
         entropy_coef = 0.01  # Coeficiente para la bonificación de entropía
 
+        scheduled_lr = self._compute_scheduled_lr()
+        self._apply_lr(scheduled_lr)
+        self.current_lr = scheduled_lr
+
         loss_value = 0.0
         for i in range(self.update_epochs):
             # Forward pass para obtener parámetros de la política y el valor
@@ -150,9 +162,27 @@ class PPOAgent:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=0.5)
             self.optimizer.step()
-            self.scheduler.step()
-            self.current_lr = self.scheduler.get_last_lr()[0]
             loss_value = loss.item()
             gs.logger.info(f"Policy loss: {policy_loss_contrib:.6g},\tValue loss: {value_loss_contrib:.6g},\tEntropy loss: {entropy_loss_contrib:.6g}, \tlr: {self.current_lr:.6g}")
 
+        self.completed_updates += 1
         return loss_value, self.current_lr
+
+    def _compute_scheduled_lr(self):
+        step = min(self.completed_updates, self.total_updates - 1)
+        if self.warmup_updates > 0 and step < self.warmup_updates:
+            progress = (step + 1) / self.warmup_updates
+            return self.lr_min + (self.lr_max - self.lr_min) * progress
+        cosine_length = self.total_updates - self.warmup_updates
+        if cosine_length <= 0:
+            return self.lr_min
+        if cosine_length == 1:
+            return self.lr_min
+        cosine_step = max(0, step - self.warmup_updates)
+        cosine_progress = min(cosine_step / (cosine_length - 1), 1.0)
+        cosine_value = 0.5 * (1 + math.cos(math.pi * cosine_progress))
+        return self.lr_min + (self.lr_max - self.lr_min) * cosine_value
+
+    def _apply_lr(self, lr_value: float):
+        for group in self.optimizer.param_groups:
+            group['lr'] = lr_value

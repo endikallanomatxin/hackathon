@@ -90,8 +90,8 @@ class TrainingRunManager:
         else:
             offset = 0
 
-        logger = TensorboardLogger(self.log_dir, run_name, global_step_offset=offset)
-        return os.fspath(run_dir), checkpoint_path, logger
+        logger = TensorboardLogger(self.log_dir, run_name, global_step_offset=0)
+        return os.fspath(run_dir), checkpoint_path, logger, offset
 
     def _find_latest_run(self, exclude_run_name: str | None):
         run_dirs = [

@@ -12,18 +12,23 @@ from log import (
     TrainingRunManager,
 )
 
-def train(batch_size=64,
-          max_steps=120,
-          show_viewer=False,
-          record=False,
-          load_latest_model=False):
+def train(
+    batch_size=128,
+    # Por lo que hemos probado, batch sizes de hasta 128 merecen la pena.
+    # A partir de ahí, la mejora no compensa el aumento de coste computacional.
+    max_steps=120,
+    show_viewer=False,
+    record=False,
+    load_latest_model=False,
+    total_updates=2000,
+):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     log_dir = pathlib.Path(__file__).parent / 'logs'
     manager = TrainingRunManager(log_dir)
     training_run_name = time.strftime("%Y-%m-%d-%H-%M-%S")
-    run_dir, checkpoint_path, tb_logger = manager.prepare_run(
+    run_dir, checkpoint_path, tb_logger, start_update = manager.prepare_run(
         training_run_name,
         resume_latest=load_latest_model
     )
@@ -40,6 +45,8 @@ def train(batch_size=64,
         device,
         obs_dim,
         act_dim,
+        total_updates=total_updates,
+        initial_update=start_update,
         from_checkpoint=checkpoint_path,
     )
 
@@ -49,7 +56,13 @@ def train(batch_size=64,
     checkpoint_every_n_updates = 100
 
     try:
-        for update in range(100_000):
+        if start_update >= total_updates:
+            gs.logger.info(
+                f"Checkpoint step {start_update} is >= requested total_updates={total_updates}; nothing to train."
+            )
+            return
+
+        for update in range(start_update, total_updates):
             print("\n")
             gs.logger.info(f"UPDATE {update}")
             # Initialize environments (no_grad, we don't want to backprop through env)
@@ -138,10 +151,15 @@ if __name__ == "__main__":
     parser.add_argument("--record",
                         action="store_true",
                         help="Enable video recording during checkpoints (off by default)")
+    parser.add_argument("--total-updates",
+                        type=int,
+                        default=2000,
+                        help="Number of PPO updates to run (controls LR schedule length)")
     args = parser.parse_args()
 
     train(
         show_viewer=args.show_viewer,
         record=args.record,
-        load_latest_model=args.load_latest_model
+        load_latest_model=args.load_latest_model,
+        total_updates=args.total_updates,
     )
