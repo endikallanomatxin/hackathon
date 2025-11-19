@@ -1,0 +1,175 @@
+import os
+import time
+import argparse
+import pathlib
+import torch
+import genesis as gs
+
+from env import Environment
+from agent import PPOAgent
+from log import (
+    show_reward_info,
+    TrainingRunManager,
+)
+
+def train(
+    batch_size=128,
+    # Por lo que hemos probado, batch sizes de hasta 128 merecen la pena.
+    # A partir de ahí, la mejora no compensa el aumento de coste computacional.
+    max_steps=120,
+    show_viewer=False,
+    record=False,
+    load_latest_model=False,
+    total_updates=4000,
+):
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    log_dir = pathlib.Path(__file__).parent / 'logs'
+    manager = TrainingRunManager(log_dir)
+    training_run_name = time.strftime("%Y-%m-%d-%H-%M-%S")
+    # TrainingRunManager centraliza todo lo referente a logs/checkpoints y también
+    # nos dice desde qué update debemos continuar si reanudamos entrenamiento.
+    run_dir, checkpoint_path, tb_logger, start_update = manager.prepare_run(
+        training_run_name,
+        resume_latest=load_latest_model
+    )
+
+    # Montamos el entorno vectorizado de Genesis: varias copias del brazo se ejecutan
+    # en paralelo para producir más datos por actualización.
+    env = Environment(device=device,
+                      batch_size=batch_size,
+                      max_steps=max_steps,
+                      show_viewer=show_viewer,
+                      record=record)
+    obs_dim = env.obs_dim
+    act_dim = env.act_dim
+
+    agent = PPOAgent(
+        device,
+        obs_dim,
+        act_dim,
+        total_updates=total_updates,
+        initial_update=start_update,
+        from_checkpoint=checkpoint_path,
+    )
+
+    os.makedirs(os.path.join(run_dir, 'checkpoints'))
+
+    inference_every_n_steps = 4
+    checkpoint_every_n_updates = 100
+
+    try:
+        if start_update >= total_updates:
+            gs.logger.info(
+                f"Checkpoint step {start_update} is >= requested total_updates={total_updates}; nothing to train."
+            )
+            return
+
+        # Bucle principal de entrenamiento: cada iteración genera un rollout completo
+        # y actualiza la política con todos esos datos.
+        for update in range(start_update, total_updates):
+            print("\n")
+            gs.logger.info(f"UPDATE {update}")
+            # Inicializamos las simulaciones; todo va dentro de no_grad() porque el
+            # entorno no forma parte del grafo de PyTorch.
+            with torch.no_grad():
+                obs = env.reset()
+
+            obs_list = []
+            actions_list = []
+            log_probs_list = []
+            values_list = []
+            rewards_list = []
+            reward_dict_list = []
+
+            checkpoint = update % checkpoint_every_n_updates == 0
+
+            # Recolectamos “inference_every_n_steps” pasos de la política antes de
+            # volver a evaluarla; así reducimos llamadas a la red neuronal.
+            for inferece in range(max_steps // inference_every_n_steps):
+                with torch.no_grad():
+                    action, log_prob, value = agent.select_action_and_get_value(obs)
+
+                obs_list.append(obs.clone().detach())            # shape [B, obs_dim]
+                actions_list.append(action.clone().detach())     # shape [B, act_dim]
+                log_probs_list.append(log_prob.clone().detach()) # shape [B]
+                values_list.append(value)                        # shape [B]
+
+                reward_sum = torch.zeros(env.batch_size, device=obs.device)
+                reward_dict_sum = None
+
+                for step in range(inference_every_n_steps):
+                    with torch.no_grad():
+                        next_obs, reward, reward_dict = env.step(action, record=checkpoint)
+                    reward_sum = reward_sum + reward
+                    if reward_dict_sum is None:
+                        reward_dict_sum = {key: float(val) for key, val in reward_dict.items()}
+                    else:
+                        for key in reward_dict_sum:
+                            reward_dict_sum[key] += float(reward_dict[key])
+
+                reward_mean = reward_sum / inference_every_n_steps
+                rewards_list.append(reward_mean.clone().detach())  # shape [B]
+                reward_dict_list.append(
+                    {key: reward_dict_sum[key] / inference_every_n_steps for key in reward_dict_sum}
+                )
+
+                obs = next_obs
+
+            # El agente espera tensores apilados de dimensión [Tiempo, Batch, ...].
+            rollout = {
+                'obs':      torch.stack(obs_list, dim=0),      # [T, B, obs_dim]
+                'actions':  torch.stack(actions_list, dim=0),  # [T, B, act_dim]
+                'log_probs':torch.stack(log_probs_list, dim=0),# [T, B]
+                'values':   torch.stack(values_list, dim=0),   # [T, B]
+                'rewards':  torch.stack(rewards_list, dim=0),  # [T, B]
+            }
+
+            loss, current_lr = agent.update(rollout)
+            mean_reward = rollout['rewards'].mean().item()
+
+            reward_dict_mean = {}
+            for key in reward_dict_list[0]:
+                reward_dict_mean[key] = sum(reward_dict[key] for reward_dict in reward_dict_list) / len(reward_dict_list)
+
+            # Mostramos en consola y TensorBoard el estado de aprendizaje.
+            show_reward_info(mean_reward, loss, current_lr, reward_dict_mean)
+            tb_logger.log_update(update, mean_reward, loss, current_lr, reward_dict_mean)
+
+            if checkpoint:
+                # Create new checkpoints folder
+                checkpoint_dir = os.path.join(run_dir, 'checkpoints', f'{update:08d}')
+                os.makedirs(checkpoint_dir)
+                # Save the video if recording
+                if record:
+                    env.save_video(os.path.join(checkpoint_dir, f"video.mp4"))
+                # Save the model
+                torch.save(agent.policy.state_dict(), os.path.join(checkpoint_dir, 'policy-model.pth'))
+    finally:
+        tb_logger.close()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train PPO agent in Genesis environment")
+    parser.add_argument("--load-latest-model",
+                        action="store_true",
+                        help="Resume training from the most recent checkpoint if available")
+    parser.add_argument("--show-viewer",
+                        action="store_true",
+                        help="Display the environment viewer during training")
+    parser.add_argument("--record",
+                        action="store_true",
+                        help="Enable video recording during checkpoints (off by default)")
+    parser.add_argument("--total-updates",
+                        type=int,
+                        default=2000,
+                        help="Number of PPO updates to run (controls LR schedule length)")
+    args = parser.parse_args()
+
+    train(
+        show_viewer=args.show_viewer,
+        record=args.record,
+        load_latest_model=args.load_latest_model,
+        total_updates=args.total_updates,
+    )
