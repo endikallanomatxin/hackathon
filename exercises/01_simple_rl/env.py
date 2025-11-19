@@ -181,7 +181,12 @@ class Environment:
             eps=1e-6,
         )
         reward_dict['direction_similarity'] = torch.mean(direction_similarity).clone().detach().cpu()
-        reward_dict['direction_similarity_reward'] = 0.1*direction_similarity*(gripper_velocity_mag.clone().detach())**2  # Make it important only if moving
+        reward_dict['direction_similarity_reward'] = (
+                1.2
+                * direction_similarity
+                * (gripper_velocity_mag.clone().detach())**2  # Make it important only if moving
+                * distance_magnitude.clone().detach()  # Make it important only if far
+        )
 
         # PENALTY: contact_force_sum
         # Obtenemos la información de contactos de la simulación.
@@ -204,7 +209,7 @@ class Environment:
         link_force_magnitudes = torch.linalg.vector_norm(links_contact_force, dim=-1)  # [batch_size, n_links]
         links_contact_force = torch.mean(link_force_magnitudes, dim=1)  # [batch_size]
         reward_dict['links_force_sum'] = torch.mean(links_contact_force).clone().detach().cpu()
-        reward_dict['links_force_sum_reward'] = -0.6*links_contact_force
+        reward_dict['links_force_sum_reward'] = -1.2*links_contact_force
 
         # PENALTY: gripper_velocity
         reward_dict['gripper_velocity'] = torch.mean(gripper_velocity_mag).clone().detach().cpu()
