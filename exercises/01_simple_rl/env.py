@@ -182,10 +182,10 @@ class Environment:
         )
         reward_dict['direction_similarity'] = torch.mean(direction_similarity).clone().detach().cpu()
         reward_dict['direction_similarity_reward'] = (
-                1.2
+                4.0
                 * direction_similarity
                 * (gripper_velocity_mag.clone().detach())**2  # Make it important only if moving
-                * distance_magnitude.clone().detach()  # Make it important only if far
+                * (distance_magnitude.clone().detach())**2 # Make it important only if far away
         )
 
         # PENALTY: contact_force_sum
