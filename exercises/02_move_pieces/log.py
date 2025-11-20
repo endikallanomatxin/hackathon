@@ -28,10 +28,11 @@ class TensorboardLogger:
     To see the logs run (with the environment activated):
 
     ```sh
-    tensorboard --logdir exercises/01_simple_rl/logs
+    tensorboard --logdir exercises/01_simple_rl/logs --bind_all --samples_per_plugin=scalars=100000
     ```
 
-    (Use the flag --bind_all to make it accessible from other machines)
+    --bind_all makes it accessible from other machines
+    --samples_per_plugin=scalars=100000 increases the number of scalar samples stored (default is 5000)
     """
     def __init__(self, log_dir, run_name: str, global_step_offset: int = 0):
         base_dir = os.fspath(log_dir)
