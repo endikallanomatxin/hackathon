@@ -16,11 +16,11 @@ def train(
     batch_size=128,
     # Por lo que hemos probado, batch sizes de hasta 128 merecen la pena.
     # A partir de ahí, la mejora no compensa el aumento de coste computacional.
+    total_updates=4000,
     max_steps=120,
     show_viewer=False,
     record=False,
     load_latest_model=False,
-    total_updates=4000,
 ):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -161,15 +161,10 @@ if __name__ == "__main__":
     parser.add_argument("--record",
                         action="store_true",
                         help="Enable video recording during checkpoints (off by default)")
-    parser.add_argument("--total-updates",
-                        type=int,
-                        default=2000,
-                        help="Number of PPO updates to run (controls LR schedule length)")
     args = parser.parse_args()
 
     train(
         show_viewer=args.show_viewer,
         record=args.record,
         load_latest_model=args.load_latest_model,
-        total_updates=args.total_updates,
     )
