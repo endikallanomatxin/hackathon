@@ -1,6 +1,7 @@
 numpy<2
 genesis-world
 torch
+gymnasium
 pandas
 matplotlib
 tensorboard

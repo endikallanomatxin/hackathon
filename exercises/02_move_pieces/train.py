@@ -5,7 +5,7 @@ import pathlib
 import torch
 import genesis as gs
 
-from env import Environment
+from env import MovePiecesEnv
 from agent import PPOAgent
 from log import (
     show_reward_info,
@@ -13,7 +13,7 @@ from log import (
 )
 
 def train(
-    batch_size=128,
+    batch_size=2,
     # Por lo que hemos probado, batch sizes de hasta 128 merecen la pena.
     # A partir de ahí, la mejora no compensa el aumento de coste computacional.
     max_steps=120,
@@ -37,11 +37,11 @@ def train(
 
     # Montamos el entorno vectorizado de Genesis: varias copias del brazo se ejecutan
     # en paralelo para producir más datos por actualización.
-    env = Environment(device=device,
-                      batch_size=batch_size,
-                      max_steps=max_steps,
-                      show_viewer=show_viewer,
-                      record=record)
+    env = MovePiecesEnv(device=device,
+                        batch_size=batch_size,
+                        max_steps=max_steps,
+                        show_viewer=show_viewer,
+                        record=record)
     obs_dim = env.obs_dim
     act_dim = env.act_dim
 
@@ -74,7 +74,7 @@ def train(
             # Inicializamos las simulaciones; todo va dentro de no_grad() porque el
             # entorno no forma parte del grafo de PyTorch.
             with torch.no_grad():
-                obs = env.reset()
+                obs, _ = env.reset()
 
             obs_list = []
             actions_list = []
@@ -82,6 +82,7 @@ def train(
             values_list = []
             rewards_list = []
             reward_dict_list = []
+            dones_list = []
 
             checkpoint = update % checkpoint_every_n_updates == 0
 
@@ -98,22 +99,26 @@ def train(
 
                 reward_sum = torch.zeros(env.batch_size, device=obs.device)
                 reward_dict_sum = None
+                done_flag = torch.zeros(env.batch_size, dtype=torch.bool, device=obs.device)
 
                 for step in range(inference_every_n_steps):
                     with torch.no_grad():
-                        next_obs, reward, reward_dict = env.step(action, record=checkpoint)
+                        next_obs, reward, terminated, truncated, info = env.step(action, record=checkpoint)
                     reward_sum = reward_sum + reward
+                    reward_terms = info.get('reward_terms', {})
                     if reward_dict_sum is None:
-                        reward_dict_sum = {key: float(val) for key, val in reward_dict.items()}
+                        reward_dict_sum = {key: float(val) for key, val in reward_terms.items()}
                     else:
                         for key in reward_dict_sum:
-                            reward_dict_sum[key] += float(reward_dict[key])
+                            reward_dict_sum[key] += float(reward_terms[key])
+                    done_flag = torch.logical_or(done_flag, torch.logical_or(terminated, truncated))
 
                 reward_mean = reward_sum / inference_every_n_steps
                 rewards_list.append(reward_mean.clone().detach())  # shape [B]
                 reward_dict_list.append(
                     {key: reward_dict_sum[key] / inference_every_n_steps for key in reward_dict_sum}
                 )
+                dones_list.append(done_flag.clone().detach())
 
                 obs = next_obs
 
@@ -124,6 +129,7 @@ def train(
                 'log_probs':torch.stack(log_probs_list, dim=0),# [T, B]
                 'values':   torch.stack(values_list, dim=0),   # [T, B]
                 'rewards':  torch.stack(rewards_list, dim=0),  # [T, B]
+                'dones':    torch.stack(dones_list, dim=0),    # [T, B]
             }
 
             loss, current_lr = agent.update(rollout)

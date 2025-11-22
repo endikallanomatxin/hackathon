@@ -1,10 +1,20 @@
 from pathlib import Path
 import colorsys
 import xml.etree.ElementTree as ET
-import genesis as gs
-import torch
 
-class Environment:
+import genesis as gs
+import gymnasium as gym
+import numpy as np
+import torch
+from gymnasium import spaces
+
+
+class MovePiecesEnv(gym.Env):
+    metadata = {
+        "render_modes": ["human"],
+        "render_fps": 60,
+    }
+
     def __init__(
             self,
             device: torch.device,
@@ -113,11 +123,26 @@ class Environment:
         # Observations include joint positions/velocities plus gripper pose/velocity and target
         self.obs_dim = self.num_robots * (2*self.dofs_per_robot + 6) + 3
         self.act_dim = self.num_robots * self.dofs_per_robot
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(self.batch_size, self.obs_dim),
+            dtype=np.float32,
+        )
+        self.action_space = spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(self.batch_size, self.act_dim),
+            dtype=np.float32,
+        )
+        self.success_threshold = 0.02  # meters
+        self.num_envs = batch_size
 
         if self.record:
             self.cam.start_recording()
 
-    def reset(self):
+    def reset(self, *, seed: int | None = None, options: dict | None = None):
+        super().reset(seed=seed)
         # Reiniciamos la posición del robot en todos los entornos
         ctrl_pos = torch.zeros(self.dofs_per_robot)
         tiled_ctrl = torch.tile(ctrl_pos, (self.batch_size, 1))
@@ -143,8 +168,8 @@ class Environment:
         gripper_pos = self._stack_link_states(self.gripper_link_name, 'get_pos')
         self._update_debug_markers(gripper_pos)
 
-        # Devuelve las observaciones iniciales
-        return self.get_obs()
+        # Devuelve las observaciones iniciales y un diccionario vacío para Gymnasium.
+        return self.get_obs(), {}
 
     def get_obs(self):
         dof_ang = self._stack_dof_states('get_dofs_position')  # [num_robots, batch, dofs]
@@ -277,7 +302,7 @@ class Environment:
                 reward_dict[key] = reward_dict[key].mean().clone().detach().cpu().item()
 
         self._update_debug_markers(gripper_pos)
-        return reward, reward_dict
+        return reward, reward_dict, best_distance.clone().detach()
 
     def step(self, actions, record=False):
         """
@@ -294,12 +319,21 @@ class Environment:
         self.current_step += 1
 
         obs = self.get_obs()
-        reward, reward_dict = self.compute_reward()
+        reward, reward_dict, best_distance = self.compute_reward()
+        terminated = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+        truncated = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+        if self.current_step >= self.max_steps:
+            truncated[:] = True
 
         if self.record and record:
             self.cam.render()
 
-        return obs, reward, reward_dict
+        info = {
+            'reward_terms': reward_dict,
+            'best_distance': best_distance,
+            'success': best_distance <= self.success_threshold,
+        }
+        return obs, reward, terminated, truncated, info
 
     def save_video(self, filename):
         if not self.record:
@@ -387,3 +421,6 @@ def actions_to_angles(actions: torch.Tensor, joint_lower: torch.Tensor, joint_up
     lower = joint_lower.to(device=normalized.device, dtype=normalized.dtype)
     upper = joint_upper.to(device=normalized.device, dtype=normalized.dtype)
     return lower + 0.5 * (normalized + 1.0) * (upper - lower)
+
+
+Environment = MovePiecesEnv
