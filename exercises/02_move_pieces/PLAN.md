@@ -32,3 +32,8 @@
 - Las fases se activarán por umbrales como en el esquema entregado (por ejemplo, pasar a Fase 2 cuando el brazo está a <0.02 m de NI, etc.). Implementaremos estos cálculos tras cerrar el rediseño del entorno.
 
 Este documento sirve como guía para los cambios estructurales del entorno y como recordatorio de la siguiente tarea: implementar las recompensas por fases descritas arriba.
+
+### Siguientes pasos sugeridos
+1. Ejecutar episodios cortos y ajustar pesos/umbrales (`w_*`, `d_pick`, `d_place`, `rotation_threshold`) para ver cómo responden los dos brazos.
+2. Sustituir las poses de piezas en `get_obs()` por la salida del sistema de visión en cuanto se integre en el robot real.
+3. Monitorear TensorBoard durante nuevas sesiones de entrenamiento y retocar las recompensas si alguna fase queda estancada.

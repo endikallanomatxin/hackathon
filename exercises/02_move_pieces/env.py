@@ -1,12 +1,31 @@
 from pathlib import Path
+from dataclasses import dataclass
 import colorsys
+import math
 import xml.etree.ElementTree as ET
+from typing import List
 
 import genesis as gs
 import gymnasium as gym
 import numpy as np
 import torch
 from gymnasium import spaces
+
+
+@dataclass(frozen=True)
+class PiecePose:
+    pos: tuple[float, float, float]
+    quat: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
+class PieceSpec:
+    name: str
+    mesh_file: Path
+    initial: PiecePose
+    target: PiecePose
+    color: tuple[float, float, float]
+    scale: float = 1.0
 
 
 class MovePiecesEnv(gym.Env):
@@ -67,6 +86,18 @@ class MovePiecesEnv(gym.Env):
             )
 
         self.plane = self.scene.add_entity(gs.morphs.Plane())
+        self.print_bed_size = (0.70, 0.45, 0.02)
+        self.print_bed_center = (0.0, -0.30, self.print_bed_size[2] / 2.0)
+        self.print_bed_top_z = self.print_bed_center[2] + self.print_bed_size[2] / 2.0
+        self.print_bed = self.scene.add_entity(
+            gs.morphs.Box(
+                pos=self.print_bed_center,
+                size=self.print_bed_size,
+                fixed=True,
+                visualization=True,
+                collision=True,
+            )
+        )
 
         self.robot_base_configs = [
             # Robot situado a la derecha, orientado hacia su compañero.
@@ -91,6 +122,23 @@ class MovePiecesEnv(gym.Env):
             for config in self.robot_base_configs
         ]
         self.num_robots = len(self.robots)
+        self.piece_specs = self._build_piece_specs(robot_path.parent)
+        self.piece_entities = [
+            self.scene.add_entity(
+                gs.morphs.Mesh(
+                    file=str(spec.mesh_file),
+                    pos=spec.initial.pos,
+                    quat=spec.initial.quat,
+                    scale=spec.scale,
+                    fixed=False,
+                    collision=True,
+                    visualization=True,
+                    convexify=False,
+                )
+            )
+            for spec in self.piece_specs
+        ]
+        self.num_pieces = len(self.piece_entities)
 
         # Construimos los entornos en batch
         self.scene.build(n_envs=batch_size)
@@ -116,12 +164,32 @@ class MovePiecesEnv(gym.Env):
         self.joint_upper = torch.tensor(upper, device=self.device, dtype=torch.float32)
         self.gripper_link_name = 'gripper_tip'
         self.forearm_link_name = 'lower_arm'
+        self._piece_initial_pose = torch.tensor(
+            [
+                (*spec.initial.pos, *spec.initial.quat)
+                for spec in self.piece_specs
+            ],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self._piece_target_pose = torch.tensor(
+            [
+                (*spec.target.pos, *spec.target.quat)
+                for spec in self.piece_specs
+            ],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self.piece_target_pos = self._piece_target_pose[:, :3]
+        self.piece_target_rotvec = self._quat_to_rotvec(self._piece_target_pose[:, 3:])
 
         # Para este ejemplo se asume que todos los entornos avanzan de forma sincronizada.
         self.current_step = 0
 
         # Observations include joint positions/velocities plus gripper pose/velocity and target
-        self.obs_dim = self.num_robots * (2*self.dofs_per_robot + 6) + 3
+        self.per_robot_obs_dim = 2 * self.dofs_per_robot + 12
+        self.per_piece_obs_dim = 12
+        self.obs_dim = self.num_robots * self.per_robot_obs_dim + self.num_pieces * self.per_piece_obs_dim
         self.act_dim = self.num_robots * self.dofs_per_robot
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -137,6 +205,25 @@ class MovePiecesEnv(gym.Env):
         )
         self.success_threshold = 0.02  # meters
         self.num_envs = batch_size
+        self.active_piece_idx = torch.zeros(self.batch_size, dtype=torch.long, device=self.device)
+        self.piece_completed_flags = torch.zeros(
+            self.batch_size,
+            self.num_pieces,
+            dtype=torch.bool,
+            device=self.device,
+        )
+        # Umbrales de transición entre fases (distancia a la pieza, target y error angular)
+        self.pick_threshold = 0.025
+        self.place_threshold = 0.02
+        self.rotation_threshold = 0.05
+        # Pesos de recompensas principales/por fase
+        self.w_pos = 4.0
+        self.w_rot = 1.5
+        self.w_phase1 = 1.0
+        self.w_phase2 = 2.0
+        self.w_phase3_pos = 3.0
+        self.w_phase3_rot = 1.5
+        self.completion_bonus = 5.0  # Bonus al terminar cada pieza
 
         if self.record:
             self.cam.start_recording()
@@ -152,10 +239,10 @@ class MovePiecesEnv(gym.Env):
                 dof_idx
             )
 
-        # Reposicionamos el target de forma aleatoria para cada entorno
-        # Se genera un tensor de forma [batch_size, 3] en un rango ([0.1, 0.3], [-0.1, -0.1], [0.0, 0.2])
-        new_target_pos = torch.tensor([0.2, -0.15, 0.0]) + torch.rand(self.batch_size, 3) * torch.tensor([0.2, 0.30, 0.30])
-        self.target_pos = new_target_pos.to(self.device)
+        self._reset_pieces()
+        self.active_piece_idx.zero_()
+        self.piece_completed_flags.zero_()
+        self.target_pos = self.piece_target_pos[0].unsqueeze(0).repeat(self.batch_size, 1)
         self.current_step = 0
 
         # Dejar que la simulación se estabilice
@@ -175,14 +262,21 @@ class MovePiecesEnv(gym.Env):
         dof_ang = self._stack_dof_states('get_dofs_position')  # [num_robots, batch, dofs]
         dof_vel = self._stack_dof_states('get_dofs_velocity')  # [num_robots, batch, dofs]
         gripper_pos = self._stack_link_states(self.gripper_link_name, 'get_pos')  # [num_robots, batch, 3]
+        gripper_quat = self._stack_link_states(self.gripper_link_name, 'get_quat')  # [num_robots, batch, 4]
+        gripper_rotvec = self._quat_to_rotvec(gripper_quat)
         gripper_vel = self._stack_link_states(self.gripper_link_name, 'get_vel')  # [num_robots, batch, 3]
-        target_pos = torch.as_tensor(
-            self.target_pos,
-            device=self.device,
-            dtype=torch.float32,
-        )  # Shape [batch_size, 3]
+        gripper_ang = self._stack_link_states(self.gripper_link_name, 'get_ang')  # [num_robots, batch, 3]
+        # TODO: sustituir las poses perfectas de las piezas por la salida del sistema de visión cuando esté disponible.
+        piece_pos = self._stack_piece_states('get_pos')  # [num_pieces, batch, 3]
+        piece_quat = self._stack_piece_states('get_quat')  # [num_pieces, batch, 4]
+        piece_rotvec = self._quat_to_rotvec(piece_quat)
+        target_pos = self.piece_target_pos.unsqueeze(1).expand(-1, self.batch_size, -1)
+        target_rotvec = self.piece_target_rotvec.unsqueeze(1).expand(-1, self.batch_size, -1)
 
         def flatten_robot_tensor(tensor):
+            return tensor.permute(1, 0, 2).reshape(self.batch_size, -1)
+
+        def flatten_piece_tensor(tensor):
             return tensor.permute(1, 0, 2).reshape(self.batch_size, -1)
 
         obs = torch.cat(
@@ -190,8 +284,13 @@ class MovePiecesEnv(gym.Env):
                 flatten_robot_tensor(dof_ang),
                 flatten_robot_tensor(dof_vel),
                 flatten_robot_tensor(gripper_pos),
+                flatten_robot_tensor(gripper_rotvec),
                 flatten_robot_tensor(gripper_vel),
-                target_pos,
+                flatten_robot_tensor(gripper_ang),
+                flatten_piece_tensor(piece_pos),
+                flatten_piece_tensor(piece_rotvec),
+                flatten_piece_tensor(target_pos),
+                flatten_piece_tensor(target_rotvec),
             ],
             dim=1,
         )
@@ -203,106 +302,133 @@ class MovePiecesEnv(gym.Env):
 
     def compute_reward(self):
         reward_dict = {}
-
-        # MAIN PENALTY: distance between gripper and target
-        # La recompensa es la distancia negativa entre el gripper y el target, para cada entorno
-        gripper_pos = self._stack_link_states(self.gripper_link_name, 'get_pos')
-        target_pos = torch.as_tensor(self.target_pos, device=self.device)
-        distance = target_pos.unsqueeze(0) - gripper_pos
-        distance_magnitude = torch.linalg.vector_norm(distance, dim=-1)
-        best_distance, best_robot_idx = torch.min(distance_magnitude, dim=0)
-        reward_dict['distance'] = torch.mean(best_distance).clone().detach().cpu()
-        reward_dict['distance_reward'] = -best_distance
-
-        # REWARD: Moving towards the target
-        # Cosine similarity between the gripper-target vector and the gripper velocity
-        gripper_velocity = self._stack_link_states(self.gripper_link_name, 'get_vel')
-        gripper_velocity_mag = torch.linalg.vector_norm(gripper_velocity, dim=-1)
         batch_indices = torch.arange(self.batch_size, device=self.device)
-        distance_batch = distance.permute(1, 0, 2)
-        velocity_batch = gripper_velocity.permute(1, 0, 2)
-        best_distance_vec = distance_batch[batch_indices, best_robot_idx]
-        best_gripper_velocity = velocity_batch[batch_indices, best_robot_idx]
-        best_gripper_velocity_mag = torch.linalg.vector_norm(best_gripper_velocity, dim=-1)
-        direction_similarity = torch.nn.functional.cosine_similarity(
-            best_gripper_velocity,
-            best_distance_vec,
-            dim=-1,
-            eps=1e-6,
+
+        gripper_pos = self._stack_link_states(self.gripper_link_name, 'get_pos')
+        gripper_vel = self._stack_link_states(self.gripper_link_name, 'get_vel')
+        gripper_vel_mag = torch.linalg.vector_norm(gripper_vel, dim=-1)
+        gripper_ang_vel = self._stack_link_states(self.gripper_link_name, 'get_ang')
+        gripper_ang_mag = torch.linalg.vector_norm(gripper_ang_vel, dim=-1)
+
+        piece_pos = self._stack_piece_states('get_pos')
+        piece_quat = self._stack_piece_states('get_quat')
+        target_pos = self.piece_target_pos[:, None, :].expand(-1, self.batch_size, -1)
+        target_quat = self._piece_target_pose[:, 3:].unsqueeze(1).expand(-1, self.batch_size, -1)
+
+        # Errores pieza a pieza respecto a su objetivo
+        pos_error = piece_pos - target_pos
+        pos_error_norm = torch.linalg.vector_norm(pos_error, dim=-1)
+        rot_error_vec = self._rotation_error_rotvec(piece_quat, target_quat)
+        rot_error_norm = torch.linalg.vector_norm(rot_error_vec, dim=-1)
+
+        piecewise_distance = pos_error_norm.mean(dim=0)
+        piecewise_rot_distance = rot_error_norm.mean(dim=0)
+        distance_reward = -self.w_pos * piecewise_distance
+        rotation_reward = -self.w_rot * piecewise_rot_distance
+        reward_dict['piecewise_distance'] = piecewise_distance.detach().mean().cpu()
+        reward_dict['piecewise_distance_reward'] = distance_reward
+        reward_dict['piecewise_rot_distance'] = piecewise_rot_distance.detach().mean().cpu()
+        reward_dict['piecewise_rot_distance_reward'] = rotation_reward
+
+        piece_pos_batch = piece_pos.permute(1, 0, 2)
+        pos_error_batch = pos_error_norm.permute(1, 0)
+        rot_error_batch = rot_error_norm.permute(1, 0)
+        active_piece_pos = piece_pos_batch[batch_indices, self.active_piece_idx]
+        active_pos_error = pos_error_batch[batch_indices, self.active_piece_idx]
+        active_rot_error = rot_error_batch[batch_indices, self.active_piece_idx]
+
+        gripper_pos_batch = gripper_pos.permute(1, 0, 2)
+        gripper_to_piece = gripper_pos_batch - active_piece_pos.unsqueeze(1)
+        gripper_distances = torch.linalg.vector_norm(gripper_to_piece, dim=-1)
+        closest_dist, closest_robot_idx = torch.min(gripper_distances, dim=1)
+        # Fase 1 si ningún brazo está suficientemente cerca, Fase 2 si todavía no llegó al target
+        needs_pick = closest_dist > self.pick_threshold
+        far_from_target = active_pos_error > self.place_threshold
+
+        phase1_reward = torch.where(
+            needs_pick,
+            -self.w_phase1 * closest_dist,
+            torch.zeros_like(closest_dist),
         )
-        reward_dict['direction_similarity'] = torch.mean(direction_similarity).clone().detach().cpu()
-        reward_dict['direction_similarity_reward'] = (
-                1.2
-                * direction_similarity
-                * (best_gripper_velocity_mag.clone().detach())**2  # Make it important only if moving
-                * best_distance.clone().detach()  # Make it important only if far
+        phase2_mask = (~needs_pick) & far_from_target
+        phase2_reward = torch.where(
+            phase2_mask,
+            -self.w_phase2 * active_pos_error,
+            torch.zeros_like(active_pos_error),
+        )
+        phase3_mask = (~needs_pick) & (~phase2_mask)
+        phase3_reward = torch.where(
+            phase3_mask,
+            -self.w_phase3_pos * active_pos_error - self.w_phase3_rot * active_rot_error,
+            torch.zeros_like(active_pos_error),
         )
 
-        # PENALTY: contact_force_sum
-        # Obtenemos la información de contactos de la simulación.
+        reward_dict['phase1_min_gripper_piece'] = closest_dist.detach().mean().cpu()
+        reward_dict['phase1_reward'] = phase1_reward
+        reward_dict['phase2_reward'] = phase2_reward
+        reward_dict['phase3_reward'] = phase3_reward
+
+        # Controlamos qué piezas ya están colocadas para avanzar el índice activo
+        piece_completed = (pos_error_norm <= self.place_threshold) & (rot_error_norm <= self.rotation_threshold)
+        piece_completed_batch = piece_completed.permute(1, 0)
+        newly_completed = piece_completed_batch & (~self.piece_completed_flags)
+        self.piece_completed_flags |= piece_completed_batch
+        completion_bonus = newly_completed.float().sum(dim=1) * self.completion_bonus
+        reward_dict['completion_bonus'] = completion_bonus
+
+        for env_idx in range(self.batch_size):
+            current_idx = int(self.active_piece_idx[env_idx].item())
+            while current_idx < self.num_pieces - 1 and piece_completed[current_idx, env_idx]:
+                current_idx += 1
+            self.active_piece_idx[env_idx] = current_idx
+
         contact_force_entries = []
         for robot in self.robots:
             contact_info = robot.get_contacts()
-            # contact_info es un diccionario con claves: 'geom_a', 'geom_b', 'link_a', 'link_b',
-            # 'position', 'force_a', 'force_b', 'valid_mask'
-            # que tiene dimensiones [n_envs, n_contacts, ...]
-            # Convertimos la fuerza a tensor. Se asume que tiene shape [n_envs, n_contacts, 3]
             force_a = torch.as_tensor(contact_info['force_a'], dtype=torch.float32, device=self.device)
-            # Calculamos la magnitud de la fuerza para cada contacto.
-            force_magnitudes = torch.linalg.vector_norm(force_a, dim=-1)  # [n_envs, n_contacts]
-            # Sumamos las fuerzas de contacto en cada entorno y luego promediamos.
-            contact_force_entries.append(force_magnitudes.sum(dim=1))  # [n_envs]
+            force_magnitudes = torch.linalg.vector_norm(force_a, dim=-1)
+            contact_force_entries.append(force_magnitudes.sum(dim=1))
         contact_force_sum = torch.stack(contact_force_entries, dim=0).sum(dim=0)
-        reward_dict['contact_force_sum'] = torch.mean(contact_force_sum).clone().detach().cpu()
-        reward_dict['contact_force_sum_reward'] = -0.1*contact_force_sum
+        reward_dict['contact_force_sum'] = contact_force_sum.detach().mean().cpu()
+        reward_dict['contact_force_sum_reward'] = -0.1 * contact_force_sum
 
-        # PENALTY: links_contact_force
         links_contact_entries = []
         for robot in self.robots:
-            links_contact_force = torch.as_tensor(robot.get_links_net_contact_force(), device=self.device)  # [batch, n_links, 3]
-            # Compute per-link magnitudes before averaging so opposing forces do not cancel out.
-            link_force_magnitudes = torch.linalg.vector_norm(links_contact_force, dim=-1)  # [batch_size, n_links]
-            links_contact_entries.append(torch.mean(link_force_magnitudes, dim=1))  # [batch_size]
+            links_contact_force = torch.as_tensor(robot.get_links_net_contact_force(), device=self.device)
+            link_force_magnitudes = torch.linalg.vector_norm(links_contact_force, dim=-1)
+            links_contact_entries.append(torch.mean(link_force_magnitudes, dim=1))
         links_contact_force = torch.stack(links_contact_entries, dim=0).mean(dim=0)
-        reward_dict['links_force_sum'] = torch.mean(links_contact_force).clone().detach().cpu()
-        reward_dict['links_force_sum_reward'] = -1.2*links_contact_force
+        reward_dict['links_force_sum'] = links_contact_force.detach().mean().cpu()
+        reward_dict['links_force_sum_reward'] = -1.2 * links_contact_force
 
-        # PENALTY: gripper_velocity
-        reward_dict['gripper_velocity'] = torch.mean(gripper_velocity_mag).clone().detach().cpu()
-        reward_dict['gripper_velocity_reward'] = -0.1*gripper_velocity_mag.sum(dim=0)
+        reward_dict['gripper_velocity'] = gripper_vel_mag.detach().mean().cpu()
+        reward_dict['gripper_velocity_reward'] = -0.1 * gripper_vel_mag.sum(dim=0)
 
-        # PENALTY: gripper_angular_velocity
-        gripper_angular_velocity = self._stack_link_states(self.gripper_link_name, 'get_ang')
-        gripper_angular_velocity = torch.linalg.vector_norm(gripper_angular_velocity, dim=-1)
-        reward_dict['gripper_angular_velocity'] = torch.mean(gripper_angular_velocity).clone().detach().cpu()
-        reward_dict['gripper_angular_velocity_reward'] = -0.01*gripper_angular_velocity.sum(dim=0)
+        reward_dict['gripper_angular_velocity'] = gripper_ang_mag.detach().mean().cpu()
+        reward_dict['gripper_angular_velocity_reward'] = -0.01 * gripper_ang_mag.sum(dim=0)
 
-        # PENALTY: joint_velocity_sq
         joint_velocity = self._stack_dof_states('get_dofs_velocity')
         joint_velocity = joint_velocity.permute(1, 0, 2).reshape(self.batch_size, -1)
         joint_velocity = torch.linalg.vector_norm(joint_velocity, dim=-1)
-        joint_velocity_sq = joint_velocity**2
-        reward_dict['joint_velocity_sq'] = torch.mean(joint_velocity_sq).clone().detach().cpu()
-        reward_dict['joint_velocity_sq_reward'] = -0.0009*joint_velocity_sq
+        joint_velocity_sq = joint_velocity ** 2
+        reward_dict['joint_velocity_sq'] = joint_velocity_sq.detach().mean().cpu()
+        reward_dict['joint_velocity_sq_reward'] = -0.0009 * joint_velocity_sq
 
-        # REWARD: forearm_height  (to have it always approach the target from above)
         forearm_pos = self._stack_link_states(self.forearm_link_name, 'get_pos')
         forearm_pos_batch = forearm_pos.permute(1, 0, 2)
-        best_forearm_pos = forearm_pos_batch[batch_indices, best_robot_idx]
-        # Get the height of the forearm link
+        best_forearm_pos = forearm_pos_batch[batch_indices, closest_robot_idx]
         forearm_height = best_forearm_pos[:, 2]
-        reward_dict['forearm_height'] = torch.mean(forearm_height).clone().detach().cpu()
-        reward_dict['forearm_height_reward'] = 0.02*forearm_height
+        reward_dict['forearm_height'] = forearm_height.detach().mean().cpu()
+        reward_dict['forearm_height_reward'] = 0.02 * forearm_height
 
-        # COMBINED REWARD
         reward = torch.zeros(self.batch_size, device=self.device)
-        for key in reward_dict:
-            if 'reward' in key:
-                reward += reward_dict[key].clone()
-                reward_dict[key] = reward_dict[key].mean().clone().detach().cpu().item()
+        for key in list(reward_dict.keys()):
+            if 'reward' in key or key.endswith('bonus'):
+                reward += reward_dict[key]
+                reward_dict[key] = reward_dict[key].mean().detach().cpu().item()
 
         self._update_debug_markers(gripper_pos)
-        return reward, reward_dict, best_distance.clone().detach()
+        return reward, reward_dict, active_pos_error.clone().detach()
 
     def step(self, actions, record=False):
         """
@@ -319,7 +445,7 @@ class MovePiecesEnv(gym.Env):
         self.current_step += 1
 
         obs = self.get_obs()
-        reward, reward_dict, best_distance = self.compute_reward()
+        reward, reward_dict, active_distance = self.compute_reward()
         terminated = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
         truncated = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
         if self.current_step >= self.max_steps:
@@ -330,8 +456,8 @@ class MovePiecesEnv(gym.Env):
 
         info = {
             'reward_terms': reward_dict,
-            'best_distance': best_distance,
-            'success': best_distance <= self.success_threshold,
+            'best_distance': active_distance,
+            'success': active_distance <= self.success_threshold,
         }
         return obs, reward, terminated, truncated, info
 
@@ -353,20 +479,21 @@ class MovePiecesEnv(gym.Env):
         return colors
 
     def _update_debug_markers(self, gripper_pos: torch.Tensor):
-        if self.scene is None or not hasattr(self, 'target_pos'):
+        if self.scene is None:
             return
         debug_envs = min(self.debug_env_count, self.batch_size)
         if debug_envs <= 0:
             return
         self.scene.clear_debug_objects()
         for env_idx in range(debug_envs):
-            color = tuple(self.env_colors[env_idx % len(self.env_colors)])
-            target = self.target_pos[env_idx].detach().cpu().tolist()
-            self.scene.draw_debug_sphere(target, radius=0.01, color=color)
+            for spec in self.piece_specs:
+                self.scene.draw_debug_sphere(spec.initial.pos, radius=0.0075, color=spec.color)
+                self.scene.draw_debug_sphere(spec.target.pos, radius=0.0095, color=spec.color)
+            gripper_color = tuple(self.env_colors[env_idx % len(self.env_colors)])
             for robot_idx in range(self.num_robots):
                 grip = gripper_pos[robot_idx, env_idx].detach().cpu().tolist()
                 radius = 0.017 if robot_idx == 0 else 0.012
-                self.scene.draw_debug_sphere(grip, radius=radius, color=color)
+                self.scene.draw_debug_sphere(grip, radius=radius, color=gripper_color)
 
     def _stack_dof_states(self, attribute: str) -> torch.Tensor:
         states = []
@@ -395,6 +522,21 @@ class MovePiecesEnv(gym.Env):
             )
         return torch.stack(states, dim=0)
 
+    def _stack_piece_states(self, attribute: str) -> torch.Tensor:
+        if not self.piece_entities:
+            return torch.zeros(0, self.batch_size, 3, device=self.device)
+        states: List[torch.Tensor] = []
+        for piece in self.piece_entities:
+            method = getattr(piece, attribute)
+            states.append(
+                torch.as_tensor(
+                    method(),
+                    device=self.device,
+                    dtype=torch.float32,
+                )
+            )
+        return torch.stack(states, dim=0)
+
     def _load_joint_limits(self, robot_path: Path):
         tree = ET.parse(robot_path)
         root = tree.getroot()
@@ -410,6 +552,118 @@ class MovePiecesEnv(gym.Env):
         if missing:
             raise ValueError(f"Missing joint limits for: {missing}")
         return limits
+
+    def _build_piece_specs(self, so101_dir: Path) -> List[PieceSpec]:
+        assets_dir = so101_dir / "assets"
+        resting_z = self.print_bed_top_z + 0.01
+        target_z = self.print_bed_top_z + 0.02
+        target_y = 0.30
+        identity = (1.0, 0.0, 0.0, 0.0)
+        rot_z_90 = (math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5))
+        rot_z_180 = (0.0, 0.0, 0.0, 1.0)
+        rot_y_180 = (0.0, 0.0, 1.0, 0.0)
+        return [
+            PieceSpec(
+                name="base_so101_v2",
+                mesh_file=assets_dir / "base_so101_v2.stl",
+                initial=PiecePose(pos=(-0.18, -0.34, resting_z), quat=identity),
+                target=PiecePose(pos=(-0.25, target_y, target_z), quat=identity),
+                color=(0.85, 0.18, 0.20),
+            ),
+            PieceSpec(
+                name="base_motor_holder_so101_v1",
+                mesh_file=assets_dir / "base_motor_holder_so101_v1.stl",
+                initial=PiecePose(pos=(-0.02, -0.34, resting_z), quat=rot_z_90),
+                target=PiecePose(pos=(-0.05, target_y + 0.05, target_z), quat=rot_z_90),
+                color=(0.98, 0.62, 0.15),
+            ),
+            PieceSpec(
+                name="upper_arm_so101_v1",
+                mesh_file=assets_dir / "upper_arm_so101_v1.stl",
+                initial=PiecePose(pos=(0.12, -0.34, resting_z), quat=rot_y_180),
+                target=PiecePose(pos=(0.15, target_y - 0.05, target_z), quat=rot_y_180),
+                color=(0.26, 0.56, 0.95),
+            ),
+            PieceSpec(
+                name="under_arm_so101_v1",
+                mesh_file=assets_dir / "under_arm_so101_v1.stl",
+                initial=PiecePose(pos=(-0.18, -0.26, resting_z), quat=identity),
+                target=PiecePose(pos=(-0.25, target_y - 0.10, target_z), quat=identity),
+                color=(0.35, 0.82, 0.55),
+            ),
+            PieceSpec(
+                name="rotation_pitch_so101_v1",
+                mesh_file=assets_dir / "rotation_pitch_so101_v1.stl",
+                initial=PiecePose(pos=(-0.02, -0.26, resting_z), quat=rot_z_90),
+                target=PiecePose(pos=(-0.05, target_y + 0.10, target_z), quat=rot_z_90),
+                color=(0.64, 0.38, 0.95),
+            ),
+            PieceSpec(
+                name="wrist_roll_pitch_so101_v2",
+                mesh_file=assets_dir / "wrist_roll_pitch_so101_v2.stl",
+                initial=PiecePose(pos=(0.12, -0.26, resting_z), quat=rot_z_180),
+                target=PiecePose(pos=(0.15, target_y + 0.00, target_z), quat=rot_z_180),
+                color=(0.95, 0.32, 0.75),
+            ),
+        ]
+
+    def _reset_pieces(self):
+        if not self.piece_entities:
+            return
+        for idx, entity in enumerate(self.piece_entities):
+            pose = self._piece_initial_pose[idx]
+            pos = pose[:3].unsqueeze(0).repeat(self.batch_size, 1).to(device=gs.device)
+            quat = pose[3:].unsqueeze(0).repeat(self.batch_size, 1).to(device=gs.device)
+            entity.set_pos(pos, zero_velocity=True)
+            entity.set_quat(quat, zero_velocity=True)
+
+    def _quat_to_rotvec(self, quat: torch.Tensor) -> torch.Tensor:
+        """
+        Convert quaternions in wxyz convention to rotation vectors by taking the shortest arc.
+        """
+        quat = torch.as_tensor(quat, device=self.device, dtype=torch.float32)
+        norm = torch.linalg.vector_norm(quat, dim=-1, keepdim=True).clamp_min(1e-6)
+        quat = quat / norm
+        # Flip sign to avoid ambiguity and keep the shortest rotation
+        quat = torch.where(quat[..., :1] < 0, -quat, quat)
+        xyz = quat[..., 1:]
+        w = torch.clamp(quat[..., :1], -1.0, 1.0)
+        xyz_norm = torch.linalg.vector_norm(xyz, dim=-1, keepdim=True)
+        angle = 2.0 * torch.atan2(xyz_norm, w)
+        axis = torch.zeros_like(xyz)
+        nonzero = xyz_norm.squeeze(-1) > 1e-6
+        axis[nonzero] = xyz[nonzero] / xyz_norm[nonzero]
+        rotvec = torch.zeros_like(xyz)
+        rotvec[nonzero] = axis[nonzero] * angle[nonzero]
+        # For very small angles approximate using first-order expansion
+        rotvec[~nonzero] = 2.0 * xyz[~nonzero]
+        return rotvec
+
+    def _rotation_error_rotvec(self, current: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Compute rotvec of the delta quaternion target * conj(current).
+        """
+        delta = self._quat_multiply(target, self._quat_conjugate(current))
+        return self._quat_to_rotvec(delta)
+
+    @staticmethod
+    def _quat_conjugate(quat: torch.Tensor) -> torch.Tensor:
+        conj = quat.clone()
+        conj[..., 1:] = -conj[..., 1:]
+        return conj
+
+    @staticmethod
+    def _quat_multiply(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+        """
+        Hamilton product for quaterniones en formato wxyz.
+        """
+        w1, x1, y1, z1 = q1.unbind(-1)
+        w2, x2, y2, z2 = q2.unbind(-1)
+        w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+        x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+        y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+        z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+        return torch.stack((w, x, y, z), dim=-1)
 
 
 def actions_to_angles(actions: torch.Tensor, joint_lower: torch.Tensor, joint_upper: torch.Tensor):
